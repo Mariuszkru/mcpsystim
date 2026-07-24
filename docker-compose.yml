@@ -1,0 +1,119 @@
+name: systim-mcp
+
+services:
+  systim-mcp:
+    build:
+      context: .
+      args:
+        WERSJA: ${WERSJA:-dev}
+    image: systim-mcp:${WERSJA:-dev}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Serwer nasłuchuje tylko na pętli zwrotnej hosta — ruch z internetu ma
+      # przechodzić przez reverse proxy z certyfikatem TLS, nie prosto tutaj.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Pobrane PDF-y przeżywają restart kontenera.
+      - faktury:/data/faktury
+    # Serwer nie potrzebuje żadnych uprawnień poza otwarciem gniazda.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- profil dev: lokalny authentik do przetestowania flow OAuth ---
+  #
+  # Uruchomienie:  docker compose --profile dev up
+  #
+  # Podnosi kompletnego authentika (server + worker + PostgreSQL + Redis) z gotowym
+  # providerem, aplikacją i scope'em z deploy/authentik/blueprint-systim-mcp.yaml.
+  # Dzięki temu cały flow OAuth 2.1 z PKCE da się przejść lokalnie, bez wystawiania
+  # czegokolwiek na świat.
+  #
+  # Jeśli masz już działającego authentika (np. https://auth.recoop.pl), ten profil
+  # jest zbędny — zaimportuj tam sam blueprint i ustaw OIDC_ISSUER na swoją instancję.
+  authentik-postgresql:
+    image: docker.io/library/postgres:16-alpine
+    profiles: ["dev"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_DB: authentik
+      POSTGRES_PASSWORD: authentik-dev
+    volumes:
+      - authentik-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik -d authentik"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  authentik-redis:
+    image: docker.io/library/redis:alpine
+    profiles: ["dev"]
+    restart: unless-stopped
+    command: --save 60 1 --loglevel warning
+    volumes:
+      - authentik-redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.5
+    profiles: ["dev"]
+    restart: unless-stopped
+    command: server
+    environment: &authentik-env
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgresql
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik-dev
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      # Klucz wyłącznie do testów lokalnych — na produkcji generowany losowo.
+      AUTHENTIK_SECRET_KEY: dev-secret-key-nie-uzywaj-na-produkcji-0123456789
+      # Konto administratora tworzone przy pierwszym starcie: akadmin / akadmin.
+      AUTHENTIK_BOOTSTRAP_PASSWORD: akadmin
+      AUTHENTIK_BOOTSTRAP_EMAIL: admin@example.com
+    volumes:
+      # Blueprinty są wykrywane automatycznie w /blueprints.
+      - ./deploy/authentik:/blueprints/custom:ro
+    ports:
+      - "127.0.0.1:9000:9000"
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+
+  # Worker stosuje blueprinty — bez niego provider i aplikacja nie powstaną.
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.5
+    profiles: ["dev"]
+    restart: unless-stopped
+    command: worker
+    environment: *authentik-env
+    volumes:
+      - ./deploy/authentik:/blueprints/custom:ro
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+
+volumes:
+  faktury:
+  authentik-db:
+  authentik-redis:

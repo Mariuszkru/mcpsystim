@@ -1,0 +1,134 @@
+# Blueprint authentika dla konektora Systim MCP.
+#
+# Tworzy: własny scope „systim:faktury", provider OAuth2 i aplikację.
+#
+# Zastosowanie na istniejącej instancji (np. https://auth.recoop.pl):
+#   authentik → Customization → Blueprints → Create → Local file / OCI,
+#   albo zamontuj katalog deploy/authentik do /blueprints/custom w kontenerze
+#   authentik-server i authentik-worker.
+#
+# W profilu dev z docker-compose.yml katalog jest montowany automatycznie.
+#
+# PRZED UŻYCIEM NA PRODUKCJI ZMIEŃ client_secret.
+version: 1
+
+metadata:
+  name: systim-mcp — konektor Claude
+  labels:
+    blueprints.goauthentik.io/description: |
+      Provider OAuth2 i aplikacja dla serwera systim-mcp podpinanego do claude.ai
+      jako custom connector.
+
+context:
+  # Slug aplikacji wchodzi do adresu issuera:
+  #   https://auth.recoop.pl/application/o/<slug>/
+  slug_aplikacji: systim-mcp
+
+  client_id: systim-mcp-connector
+
+  # ZMIEŃ przed wdrożeniem produkcyjnym:
+  #   openssl rand -base64 48
+  client_secret: ZMIEN-MNIE-sekret-tylko-do-testow-lokalnych
+
+entries:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Własny scope. Jego nazwa trafia do roszczenia „scope" w tokenie dostępowym
+  # i to jej pilnuje serwer MCP (zmienna OIDC_SCOPE).
+  # ───────────────────────────────────────────────────────────────────────────
+  - id: scope-systim-faktury
+    model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      name: systim-mcp — wystawianie faktur
+    attrs:
+      name: systim-mcp — wystawianie faktur
+      scope_name: "systim:faktury"
+      description: "Wystawianie faktur sprzedaży w systemie Systim"
+      # Scope nie wnosi żadnych dodatkowych roszczeń — służy wyłącznie jako
+      # uprawnienie. Pusty słownik jest tu poprawną i celową wartością.
+      #
+      # Gdybyś chciał, żeby „aud" w tokenie było adresem zasobu zamiast
+      # client_id, zwróć tutaj:  return {"aud": "https://mcp.firma.pl/mcp"}
+      # i ustaw OIDC_AUDIENCE na tę samą wartość.
+      expression: |
+        return {}
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Provider OAuth2.
+  # ───────────────────────────────────────────────────────────────────────────
+  - id: provider-systim-mcp
+    model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: systim-mcp
+    attrs:
+      name: systim-mcp
+
+      # Klient poufny: stałe client_id i client_secret wpisuje się ręcznie
+      # w „Advanced settings" konektora w claude.ai. Dynamic Client Registration
+      # nie jest potrzebna przy jednej organizacji i jednym kliencie.
+      client_type: confidential
+      client_id: !Context client_id
+      client_secret: !Context client_secret
+
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-explicit-consent],
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+
+      # Adresy powrotne konektora Claude. Dopasowanie strict — bez wieloznaczników.
+      redirect_uris:
+        - url: "https://claude.ai/api/mcp/auth_callback"
+          matching_mode: strict
+        - url: "https://claude.com/api/mcp/auth_callback"
+          matching_mode: strict
+
+      # Token dostępowy krótki, sesja odnawiana refresh tokenem.
+      access_code_validity: "minutes=10"
+      access_token_validity: "minutes=30"
+      refresh_token_validity: "days=30"
+
+      # offline_access MUSI tu być, inaczej authentik (od wersji 2024.2) nie wyda
+      # refresh tokenu, a konektor rozłączy się po wygaśnięciu tokenu dostępowego.
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [scope_name, offline_access],
+          ]
+        - !KeyOf scope-systim-faktury
+
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, "authentik Self-signed Certificate"],
+        ]
+
+      # Tryb per-provider (domyślny) daje issuer:
+      #   https://auth.recoop.pl/application/o/systim-mcp/
+      issuer_mode: per_provider
+      sub_mode: hashed_user_id
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Aplikacja. Jej slug wchodzi do adresu issuera i JWKS.
+  # ───────────────────────────────────────────────────────────────────────────
+  - id: app-systim-mcp
+    model: authentik_core.application
+    identifiers:
+      slug: !Context slug_aplikacji
+    attrs:
+      name: Systim MCP — faktury sprzedaży
+      slug: !Context slug_aplikacji
+      provider: !KeyOf provider-systim-mcp
+      meta_description: |
+        Wystawianie faktur sprzedaży w Systim przez Claude.
+        UWAGA: token API Systim nie ma granularnych uprawnień — dostęp do tej
+        aplikacji oznacza pełny dostęp do księgowości firmy.
+      meta_publisher: systim-mcp
+      # Dostęp nadaje się przez policy bindings — domyślnie aplikacja jest
+      # widoczna dla wszystkich uwierzytelnionych użytkowników. Ogranicz go
+      # do wąskiej grupy: authentik → Applications → systim-mcp → Policy bindings.
+      policy_engine_mode: any

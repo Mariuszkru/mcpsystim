@@ -1,0 +1,610 @@
+# systim-mcp
+
+Serwer MCP (Model Context Protocol) integrujący Claude z systemem fakturowym
+[Systim](https://www.systim.pl/API/). Napisany w Go, uruchamiany jako kontener Docker.
+
+Zakres jest celowo wąski: **wystawianie faktur sprzedaży** plus minimum narzędzi
+pomocniczych potrzebnych, żeby fakturę dało się poprawnie złożyć.
+
+---
+
+## ⚠️ Zanim zaczniesz — o bezpieczeństwie
+
+**API Systim nie ma granularnych uprawnień.** Jeden token daje pełny dostęp do
+konta, łącznie z usuwaniem danych. Serwer, który tu stawiasz, jest bramką do
+księgowości firmy.
+
+Wynikają z tego trzy zasady, których ten projekt pilnuje:
+
+1. **Endpoint `/mcp` bez uwierzytelnienia jest nie do przyjęcia.** Serwer wymaga
+   ważnego tokenu OAuth 2.1. Wyłączenie tej walidacji (`SYSTIM_AUTH_DISABLED=true`)
+   jest możliwe wyłącznie do testów lokalnych i powoduje głośne ostrzeżenie
+   w logach przy każdym starcie.
+2. **Wystawienie dokumentu jest dwuetapowe.** `przygotuj_fakture` tylko liczy
+   i pokazuje kwoty, `zatwierdz_fakture` dopiero zapisuje. Użytkownik musi zobaczyć
+   kwoty, zanim powstanie dokument księgowy.
+3. **Narzędzia usuwającego nie ma.** Metoda `delSellInvoice` istnieje w API, ale
+   celowo nie jest wystawiona jako narzędzie MCP.
+
+Załóż w Systim **osobnego użytkownika do integracji** i wygeneruj mu hasło API.
+Nie używaj konta, którym logujesz się do panelu.
+
+---
+
+## Wymagania
+
+| Element | Wersja / uwagi |
+|---|---|
+| Go | 1.25+ — patrz [Decyzje projektowe](#decyzje-projektowe-i-odstępstwa) |
+| Docker | z obsługą BuildKit |
+| Konto Systim | z dostępem do API i wygenerowanym hasłem API |
+| Dostawca tożsamości | authentik — wdrożenie korzysta z `https://auth.recoop.pl` |
+| Publiczny adres HTTPS | Claude łączy się z chmury Anthropic — localhost nie zadziała |
+
+---
+
+## Pierwsze uruchomienie
+
+Kolejność ma znaczenie. Trzy z tych kroków wymagają zajrzenia do panelu Systim,
+bo API nie udostępnia metod, które by je zautomatyzowały.
+
+### 1. Skopiuj konfigurację i uzupełnij dane dostępowe
+
+```bash
+cp .env.example .env
+```
+
+Uzupełnij `SYSTIM_KONTO`, `SYSTIM_LOGIN`, `SYSTIM_PASS` oraz wygeneruj klucz
+podpisujący szkice:
+
+```bash
+openssl rand -base64 48
+```
+
+### 2. Znajdź `id_szablonu` i `id_numeracji` — ręcznie, w panelu
+
+**Nie ma metody API, która by je wylistowała.** Brak któregokolwiek z tych dwóch
+pól powoduje odrzucenie dokumentu przez API.
+
+- **ID szablonu**: Panel Systim → Ustawienia → Szablony wydruku → wejdź w edycję
+  wybranego szablonu i odczytaj parametr `id` z adresu URL.
+- **ID numeracji**: Panel Systim → Ustawienia → Numeracja dokumentów → analogicznie.
+
+Wpisz je do `SYSTIM_ID_SZABLONU` i `SYSTIM_ID_NUMERACJI`.
+
+### 3. Odczytaj ID stawek VAT narzędziem `lista_stawek_vat`
+
+Pole `stawka_vat` w API przyjmuje **ID stawki w Systim, a nie procent**. To jedna
+z najczęstszych pomyłek przy tej integracji.
+
+Uruchom serwer z tymczasową wartością `SYSTIM_VAT_IDS` (może być `{"23":1}`) i wywołaj
+narzędzie `lista_stawek_vat`. Najprościej lokalnie, po stdio:
+
+```bash
+docker run -i --rm --env-file .env -e SYSTIM_TRANSPORT=stdio systim-mcp:dev
+```
+
+Narzędzie zwróci listę w postaci `ID 1 — 23%`, `ID 5 — zw` i tak dalej.
+
+### 4. Uzupełnij `SYSTIM_VAT_IDS` i zrestartuj
+
+```
+SYSTIM_VAT_IDS={"23":1,"8":2,"5":3,"0":4,"zw":5}
+```
+
+Kluczem jest procent bez znaku `%` albo oznaczenie stawki nieprocentowej
+(`zw`, `np`, `oo`). Dzięki temu mapowaniu użytkownik narzędzia pisze po prostu
+„23" albo „zw", a serwer sam podstawia ID.
+
+### 5. Wystaw pierwszy dokument jako **pro formę**
+
+Zanim wystawisz prawdziwą fakturę VAT, sprawdź całą ścieżkę na dokumencie, który
+nie jest fakturą. W `przygotuj_fakture` podaj `rodzaj: 1` (pro forma).
+
+### 6. Sprawdź dokument w panelu Systim
+
+Zweryfikuj kwoty, dane nabywcy, szablon i numer. Kwoty liczy ten serwer — API
+Systim ich nie wylicza — więc to jest moment na potwierdzenie, że wszystko się zgadza.
+
+### 7. Dodaj jeszcze jeden dokument ręcznie i sprawdź numerację
+
+**Dokumentacja Systim wprost przed tym ostrzega.** Wystaw jeden dokument ręcznie
+w panelu, potem jeszcze jeden przez API, i sprawdź, czy w numeracji nie zrobiła się
+dziura. Jeśli tak — problem jest w konfiguracji numeracji, a nie w tym serwerze,
+i trzeba go rozwiązać, zanim zaczniesz wystawiać dokumenty produkcyjnie.
+
+Do weryfikacji służy narzędzie `lista_faktur`.
+
+---
+
+## Narzędzia MCP
+
+| Narzędzie | Adnotacja | Opis |
+|---|---|---|
+| `lista_stawek_vat` | read-only | Stawki VAT wraz z ID — do jednorazowej konfiguracji |
+| `szukaj_kontrahenta` | read-only | Po nazwie lub NIP; odporne na myślniki i wielkość liter, maks. 25 wyników |
+| `szukaj_produktu` | read-only | Po nazwie, kodzie lub opisie, maks. 25 wyników |
+| `przygotuj_fakture` | read-only | Liczy kwoty, zwraca podgląd i `szkic_id`. **Niczego nie zapisuje** |
+| `zatwierdz_fakture` | **destrukcyjne, nieidempotentne** | Wystawia dokument. **Nieodwracalne** |
+| `lista_faktur` | read-only | Faktury w zakresie dat — do weryfikacji |
+| `pobierz_pdf` | zapis na dysk | Zapisuje PDF do wolumenu i zwraca ścieżkę |
+
+### Dlaczego `przygotuj_fakture` i `zatwierdz_fakture` są rozdzielone
+
+Faktura to dokument księgowy. Użytkownik musi zobaczyć kwoty, zanim je zatwierdzi,
+a model nie może wystawić dokumentu „przy okazji" realizowania innego polecenia.
+
+`przygotuj_fakture` zwraca `szkic_id` — **samowystarczalny token podpisany
+HMAC-SHA256** kluczem z `SYSTIM_SZKIC_KLUCZ`, zawierający w środku wszystkie
+pozycje, kwoty i czas wygaśnięcia (30 minut). Nie jest to klucz do mapy w pamięci
+procesu, więc:
+
+- szkic przeżywa restart serwera,
+- działa przy wielu replikach za load balancerem,
+- zmiana choćby jednej kwoty unieważnia podpis i szkic zostaje odrzucony.
+
+To ostatnie jest istotne: użytkownik akceptuje **konkretne kwoty**, więc kwoty nie
+mogą się zmienić między podglądem a zapisem.
+
+### `pobierz_pdf` nie zwraca base64
+
+Zawartość pliku trafia na zamontowany wolumen, a narzędzie zwraca samą ścieżkę.
+PDF w odpowiedzi zapchałby kontekst rozmowy.
+
+---
+
+## Konfiguracja
+
+Wyłącznie przez zmienne środowiskowe, walidowane raz przy starcie. Brak wymaganej
+zmiennej **zatrzymuje proces z pełną listą braków**, zamiast wysypać się dopiero
+przy pierwszym wywołaniu narzędzia.
+
+Komplet zmiennych z komentarzami, gdzie w panelu Systim znaleźć każdą wartość,
+znajduje się w [`.env.example`](.env.example).
+
+| Zmienna | Domyślnie | Opis |
+|---|---|---|
+| `SYSTIM_KONTO` | — | Poddomena konta (`abcd` dla `abcd.systim.pl`) |
+| `SYSTIM_LOGIN` | — | Użytkownik z wygenerowanym hasłem API |
+| `SYSTIM_PASS` | — | Hasło do API (inne niż hasło do panelu) |
+| `SYSTIM_ID_SZABLONU` | — | ID szablonu dokumentu |
+| `SYSTIM_ID_NUMERACJI` | — | ID numeracji |
+| `SYSTIM_VAT_IDS` | — | JSON: mapa stawka → ID |
+| `SYSTIM_TRANSPORT` | `http` | `http` albo `stdio` |
+| `SYSTIM_ADDR` | `:8000` | Adres nasłuchu |
+| `SYSTIM_KATALOG_PDF` | `/data/faktury` | Katalog na pobrane PDF-y |
+| `SYSTIM_TIMEOUT` | `30s` | Timeout wywołania API Systim |
+| `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
+| `SYSTIM_PUBLIC_URL` | — | Publiczny adres HTTPS serwera |
+| `SYSTIM_SZKIC_KLUCZ` | — | Klucz HMAC, min. 32 bajty |
+| `OIDC_ISSUER` | — | Issuer authentika, z ukośnikiem: `https://auth.recoop.pl/application/o/<slug>/` |
+| `OIDC_AUDIENCE` | — | Oczekiwane `aud` — w authentiku domyślnie `client_id` |
+| `OIDC_SCOPE` | — | Scope wymagany w tokenie |
+| `OIDC_SCOPES_REQUESTED` | `openid offline_access` | Scope'y ogłaszane klientowi; `offline_access` jest konieczny dla refresh tokenu |
+| `SYSTIM_AUTH_DISABLED` | `false` | Wyłącza walidację tokenu — **tylko testy lokalne** |
+| `SYSTIM_DODATKOWE_ORIGINY` | — | Dodatkowe dozwolone `Origin`, po przecinku |
+| `SYSTIM_MAX_POZYCJI` | `200` | Limit pozycji na dokumencie |
+| `SYSTIM_MAX_CIALO` | `4194304` | Limit rozmiaru żądania do `/mcp` |
+| `SYSTIM_WYLACZ_OCHRONE_LOCALHOST` | `false` | Patrz [Rozwiązywanie problemów](#rozwiązywanie-problemów) |
+
+---
+
+## Uwierzytelnianie
+
+Wdrożenie korzysta z **authentika pod adresem `https://auth.recoop.pl`**.
+
+### Podział ról
+
+Zgodna implementacja OAuth 2.1 to dużo pracy i łatwo o subtelny błąd
+bezpieczeństwa, więc **ten projekt nie zawiera własnego serwera autoryzacji**.
+Serwer MCP pełni wyłącznie rolę **resource servera**: hostuje Protected Resource
+Metadata i waliduje tokeny wydane przez authentika.
+
+Authentik nadaje się tu dobrze: jest samohostowany, więc dane logowania do
+księgowości nie wychodzą poza infrastrukturę firmy; ogłasza
+`code_challenge_methods_supported: ["plain", "S256"]`, czego wymaga Claude;
+wspiera `authorization_code` i `refresh_token`; a całą konfigurację providera da
+się opisać deklaratywnie blueprintem.
+
+### Jak to działa
+
+1. Claude odpytuje `/mcp` bez tokenu i dostaje **`401`** z nagłówkiem:
+   ```
+   WWW-Authenticate: Bearer realm="systim-mcp",
+     resource_metadata="https://mcp.firma.pl/.well-known/oauth-protected-resource",
+     scope="systim:faktury openid offline_access", error="invalid_token"
+   ```
+2. Pobiera **Protected Resource Metadata** spod wskazanego adresu i dowiaduje się,
+   który serwer autoryzacji obsługuje ten zasób.
+3. Przeprowadza flow **`authorization_code` + PKCE (S256)**, a potem odświeża token
+   przez **`refresh_token`**.
+4. Serwer waliduje JWT: podpis przez JWKS (z cache i obsługą rotacji kluczy),
+   `iss`, `aud`, `exp`, `nbf` oraz wymagany scope.
+
+Czysty `client_credentials` (maszyna–maszyna, bez udziału użytkownika) **nie jest
+wspierany przez Claude** i nie ma tu zastosowania.
+
+Walidacja jest zrealizowana jako `http.Handler` middleware opakowujący handler MCP,
+z możliwością wyłączenia przez `SYSTIM_AUTH_DISABLED=true`.
+
+### Konfiguracja authentika
+
+Gotowy blueprint: [`deploy/authentik/blueprint-systim-mcp.yaml`](deploy/authentik/blueprint-systim-mcp.yaml).
+Tworzy scope `systim:faktury`, provider OAuth2 i aplikację.
+
+Zastosowanie na `auth.recoop.pl` — jedna z dwóch dróg:
+
+- **authentik → Customization → Blueprints → Create**, wskazując plik, albo
+- montując katalog `deploy/authentik` do `/blueprints/custom` w kontenerach
+  `authentik-server` **i** `authentik-worker` (blueprinty stosuje worker).
+
+**Przed zastosowaniem zmień `client_secret`** w sekcji `context` blueprintu:
+
+```bash
+openssl rand -base64 48
+```
+
+Po zaaplikowaniu ustaw w `.env`:
+
+```
+OIDC_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/
+OIDC_AUDIENCE=systim-mcp-connector
+OIDC_SCOPE=systim:faktury
+```
+
+### Trzy szczegóły authentika, które łatwo przeoczyć
+
+**1. Issuer zawiera slug aplikacji i kończy się ukośnikiem.**
+
+W domyślnym trybie „per provider" issuer ma postać
+`https://auth.recoop.pl/application/o/<slug-aplikacji>/`, a nie samo
+`https://auth.recoop.pl/`. Sprawdź go u źródła:
+
+```bash
+curl -s https://auth.recoop.pl/application/o/systim-mcp/.well-known/openid-configuration | jq .issuer
+```
+
+**2. Bez `offline_access` nie ma refresh tokenu.**
+
+Od wersji 2024.2 authentik wydaje refresh token **tylko wtedy**, gdy klient wprost
+poprosił o scope `offline_access`. Bez niego konektor zacznie działać normalnie,
+a rozłączy się dopiero po wygaśnięciu tokenu dostępowego — objaw mylący, bo
+wygląda na przypadkową awarię sieci.
+
+Dlatego serwer ogłasza w `WWW-Authenticate` **szerszą listę scope'ów niż sprawdza**:
+`systim:faktury openid offline_access`. Sam token musi mieć jedynie
+`systim:faktury`. Listę nadpisuje `OIDC_SCOPES_REQUESTED`, a `offline_access` musi
+też być wśród `property_mappings` providera (blueprint już go tam ma).
+
+**3. `aud` to domyślnie `client_id`.**
+
+Authentik wstawia do `aud` identyfikator klienta, więc `OIDC_AUDIENCE` należy
+ustawić na `systim-mcp-connector` — bez żadnego dodatkowego mapowania. Jeśli
+wolisz, żeby `aud` było adresem zasobu, zmień wyrażenie scope mappingu
+w blueprincie na `return {"aud": "https://mcp.firma.pl/mcp"}` i wpisz tę samą
+wartość w `OIDC_AUDIENCE`.
+
+### Sprawdzenie konfiguracji przed podpięciem konektora
+
+Zamiast diagnozować nieudane podpięcie w claude.ai, uruchom test integracyjny.
+Sprawdza discovery, PKCE S256 i to, czy parser przyjmuje wszystkie klucze z JWKS:
+
+```bash
+AUTH_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
+```
+
+### Rejestracja klienta
+
+Blueprint zakłada **klienta poufnego ze stałym `client_id` i `client_secret`**,
+wpisywanym ręcznie w „Advanced settings" konektora. Dla jednej organizacji
+i jednego klienta jest to prostsze i w zupełności wystarczające — Dynamic Client
+Registration nie jest potrzebna.
+
+- `client_id`: `systim-mcp-connector`
+- `client_secret`: wartość, którą wygenerowałeś w blueprincie
+
+> Jeśli zmienisz `client_type` na `public` (klient bez sekretu), zadbaj o **rotację
+> refresh tokenów** — nowy token musi wrócić w tej samej odpowiedzi, w której
+> unieważniany jest stary. W authentiku odpowiada za to ustawienie providera
+> „Refresh token rotation".
+
+### Endpoint `/token` musi przyjmować `application/x-www-form-urlencoded`
+
+Serwer autoryzacji skonfigurowany wyłącznie na JSON zwróci `415` i cały flow się
+wywali. Authentik robi to poprawnie domyślnie — warto o tym pamiętać, jeśli przed
+nim stoi proxy przepisujące żądania.
+
+### Ograniczenie dostępu do aplikacji
+
+Blueprint tworzy aplikację widoczną dla wszystkich uwierzytelnionych użytkowników.
+**Zawęź to**: authentik → Applications → `systim-mcp` → Policy bindings, i przypisz
+wąską grupę. Dostęp do tego konektora to pełny dostęp do księgowości firmy.
+
+### Lokalny test całego flow
+
+```bash
+docker compose --profile dev up
+```
+
+Podnosi kompletnego authentika (server, worker, PostgreSQL, Redis) na
+`http://127.0.0.1:9000` z automatycznie zastosowanym blueprintem. W `.env` ustaw:
+
+```
+OIDC_ISSUER=http://127.0.0.1:9000/application/o/systim-mcp/
+OIDC_AUDIENCE=systim-mcp-connector
+OIDC_SCOPE=systim:faktury
+```
+
+Panel administracyjny: `http://127.0.0.1:9000` (`akadmin` / `akadmin`).
+
+Ten profil jest zbędny, jeśli korzystasz z `auth.recoop.pl` — służy do przejścia
+flow bez ruszania instancji produkcyjnej.
+
+### Alternatywa: `static_headers`
+
+Anthropic udostępnia w wersji **beta** uwierzytelnianie stałym nagłówkiem
+(`static_headers`), które wymaga kontaktu w sprawie wcześniejszego dostępu.
+Jest to opcja warta rozważenia, jeśli stawianie IdP jest w danym środowisku
+nieproporcjonalne do skali. Ten projekt **nie buduje na niej głównej ścieżki** —
+domyślną i przetestowaną drogą jest OAuth 2.1 z authentikiem.
+## Uruchomienie
+
+### Docker Compose (docelowo)
+
+```bash
+docker compose up -d --build
+```
+
+Serwer nasłuchuje na `127.0.0.1:8000`. Ruch z internetu ma przechodzić przez
+**reverse proxy z certyfikatem TLS** — kontener celowo nie jest wystawiony wprost.
+
+Endpointy:
+
+| Ścieżka | Przeznaczenie |
+|---|---|
+| `/mcp` | Streamable HTTP — endpoint MCP (wymaga tokenu) |
+| `/healthz` | Sonda dla `HEALTHCHECK` i platformy hostingowej (bez tokenu) |
+| `/.well-known/oauth-protected-resource` | Protected Resource Metadata (bez tokenu) |
+
+Starego transportu **SSE nie ma i nie będzie** — infrastruktura konektorów Claude
+go nie wspiera, więc nie jest implementowany nawet jako fallback.
+
+### stdio (lokalne debugowanie)
+
+```bash
+docker run -i --rm --env-file .env -e SYSTIM_TRANSPORT=stdio systim-mcp:dev
+```
+
+W tym trybie `stdout` należy wyłącznie do protokołu MCP, więc logi `slog`
+są kierowane na `stderr`.
+
+---
+
+## Podpięcie do claude.ai
+
+1. Wystaw serwer pod publicznym adresem **HTTPS**.
+2. W claude.ai → Ustawienia → Konektory → **Dodaj custom connector**.
+3. Podaj adres `https://twoj-adres/mcp`.
+4. W „Advanced settings" wpisz `client_id` i `client_secret` z authentika
+   (`systim-mcp-connector` oraz sekret ustawiony w blueprincie).
+5. Przejdź flow logowania.
+
+> **Claude łączy się z chmury Anthropic, a nie z urządzenia użytkownika.**
+> Localhost, VPN i sieci firmowe nie zadziałają. Serwer musi być osiągalny
+> z publicznego internetu.
+
+---
+
+## Rozwiązywanie problemów
+
+### Konektor działa w przeglądarce, ale nie działa z Claude
+
+**Sprawdź WAF.** Blokowanie ruchu wychodzącego Anthropic przez WAF (Cloudflare,
+AWS WAF, ModSecurity) to jedna z częstszych przyczyn tej sytuacji. Testujesz
+z własnej przeglądarki i wszystko działa, bo Twój adres IP nie jest blokowany —
+a żądania z chmury Anthropic są odrzucane, zanim dotrą do kontenera.
+
+Zajrzyj do logów WAF-a, a nie do logów tego serwera.
+
+### `403` mimo poprawnej konfiguracji
+
+Dwie możliwe przyczyny:
+
+1. **Walidacja `Origin`.** Serwer odrzuca żądania z nieznanym `Origin` (ochrona
+   przed DNS rebinding — wymóg specyfikacji MCP). Żądania **bez** tego nagłówka są
+   przepuszczane, bo `Origin` ustawiają przeglądarki, a Claude łączy się po stronie
+   serwera. Jeśli przed serwerem stoi proxy dokładające `Origin`, dopisz jego adres
+   do `SYSTIM_DODATKOWE_ORIGINY`.
+2. **Ochrona localhost w SDK.** Gdy reverse proxy stoi na tym samym hoście
+   w `network_mode: host`, żądania przychodzą z `127.0.0.1` przy nielokalnym
+   nagłówku `Host`, co SDK traktuje jako próbę DNS rebinding. Wtedy ustaw
+   `SYSTIM_WYLACZ_OCHRONE_LOCALHOST=true`.
+
+### Konektor działa kilkanaście minut, po czym się rozłącza
+
+Prawie na pewno brak refresh tokenu. Authentik od wersji 2024.2 wydaje go tylko
+wtedy, gdy klient poprosił o scope `offline_access`. Sprawdź dwie rzeczy:
+
+1. czy `offline_access` jest w `property_mappings` providera w authentiku,
+2. czy serwer ogłasza go w nagłówku:
+
+```bash
+curl -si -X POST https://mcp.firma.pl/mcp -H 'Content-Type: application/json' -d '{}' | grep -i www-authenticate
+```
+
+W parametrze `scope` powinny być `systim:faktury openid offline_access`.
+
+### `401` mimo poprawnego logowania — niezgodny `iss` albo `aud`
+
+Dwa najczęstsze przypadki przy authentiku:
+
+- **`iss`**: w trybie per-provider issuer zawiera slug aplikacji i kończy się
+  ukośnikiem. `https://auth.recoop.pl/` zamiast
+  `https://auth.recoop.pl/application/o/systim-mcp/` nie zadziała.
+- **`aud`**: authentik wstawia tam `client_id`, więc `OIDC_AUDIENCE` musi być
+  równe `systim-mcp-connector`, a nie adresowi serwera MCP.
+
+Obie rzeczy potwierdzisz jednym poleceniem:
+
+```bash
+AUTH_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
+```
+
+Przy `LOG_LEVEL=debug` serwer loguje też powód odrzucenia każdego tokenu.
+
+### Błąd 13 „brak sesji użytkownika"
+
+To sytuacja **normalna, nie awaria**. Sesje API wygasają po czasie ustawionym
+w opcjach konta, a **każde zalogowanie użytkownika do panelu WWW kasuje wszystkie
+sesje API**. Klient przechwytuje ten błąd, loguje się ponownie i ponawia żądanie
+dokładnie raz. Jeśli widzisz ten komunikat w odpowiedzi narzędzia, ponowienie też
+się nie powiodło.
+
+### Błąd 2 „dostęp zabroniony"
+
+Zwykle throttling za zbyt intensywne odpytywanie API albo blokada po adresie IP.
+Odczekaj i ogranicz liczbę wywołań.
+
+### Błąd 16 „miesiąc jest zamknięty"
+
+Okres księgowy, w którym miał powstać dokument, został zamknięty w Systim. Otwórz
+go w panelu albo wystaw dokument z datą z bieżącego, otwartego miesiąca.
+
+### `result_code: 102` po wystawieniu
+
+Dokument **powstał i ma numer**, ale zapis w księgowości się nie udał. Narzędzie
+zwraca to jako ostrzeżenie wymagające uwagi — trzeba poprawić księgowanie ręcznie
+w panelu.
+
+---
+
+## Testy
+
+```bash
+go test -race ./...
+go vet ./...
+gofmt -l .
+```
+
+Testy używają wyłącznie `net/http/httptest` — bez zewnętrznych bibliotek
+mockujących. Pokrywają między innymi:
+
+- **Kształt JSON:** `error.code` jako liczba i jako string, `error.fields` jako
+  tablica / mapa / brak, `result` jako mapa kluczowana ID i jako tablica, pole
+  liczbowe przychodzące jako `""`, pusta tablica zamiast pustej mapy, encje HTML
+  w nazwie kontrahenta.
+- **Sesje:** błąd 13 → przelogowanie → ponowienie → sukces; błąd 13 dwa razy
+  z rzędu → błąd bez pętli; 16 równoległych wywołań na wygasłym tokenie → **jedno**
+  logowanie (pod `-race`).
+- **Arytmetyka:** 3 × 33,33 zł przy 23%, kwoty trafiające dokładnie w połówkę
+  grosza, oraz osobny test potwierdzający, że `decimal.Round` zaokrągla
+  half-away-from-zero.
+- **Żądanie `addSellInvoice`:** asercja, że w ciele są klucze `opis[0]`, `ilosc[0]`
+  itd. w konwencji PHP, a nie JSON.
+- **Szkice:** poprawny przechodzi, ze zmienioną kwotą jest odrzucany,
+  przeterminowany jest odrzucany, wygenerowany innym kluczem jest odrzucany.
+- **Uwierzytelnianie:** `/mcp` bez tokenu → `401` z `WWW-Authenticate`; token
+  z błędnym `aud`, po `exp`, z obcym `iss`, podpisany nieznanym kluczem, z `alg=none`
+  i z `alg=HS256` → odrzucony; brak scope → `403`.
+- **Origin:** żądanie z obcym `Origin` → odrzucone; bez nagłówka → przepuszczone.
+- **Scope:** `WWW-Authenticate` ogłasza `offline_access`, ale token bez niego nadal
+  przechodzi — o `offline_access` prosi się serwer autoryzacji, a nie sprawdza w tokenie.
+
+Osobno, poza `go test ./...`, można sprawdzić konfigurację prawdziwego IdP:
+
+```bash
+AUTH_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
+```
+
+Test jest domyślnie pomijany. Weryfikuje discovery, obecność PKCE S256 i to, czy
+parser przyjmuje wszystkie klucze z JWKS — czyli dokładnie te rzeczy, które inaczej
+objawiłyby się dopiero jako nieudane podpięcie konektora.
+
+---
+
+## Decyzje projektowe i odstępstwa
+
+### Go 1.25 zamiast 1.24 w obrazie budującym
+
+Wymuszone. `github.com/modelcontextprotocol/go-sdk` w wersji `v1.7.0-pre.3`
+deklaruje w `go.mod` wymaganie `go 1.25.0`, więc `golang:1.24` nie zbuduje tego
+projektu.
+
+### SDK w wersji pre-release
+
+**`v1.7.0` stabilne nie istnieje** — najnowsze stabilne to `v1.6.1`. Wersja
+`v1.7.0-pre.3` została wybrana świadomie, bo wnosi `MaxRequestBodyBytes`
+i `PropagateRequestCancellation` wprost w opcjach handlera. Na `v1.6.1` te dwa
+wymagania trzeba by realizować własnym kodem (`http.MaxBytesHandler` i `BaseContext`);
+sam tryb `Stateless` jest dostępny w obu wersjach.
+
+### Szkice jako podpisane tokeny, a nie mapa w pamięci
+
+Tryb `Stateless = true` jest wymagany przez najnowszą wersję protokołu w transporcie
+streamable HTTP. Trzymanie szkiców w mapie chronionej mutexem — wraz z goroutine
+sprzątającą wygasłe wpisy — zakładałoby, że kolejne żądanie trafi w ten sam proces,
+co w trybie stateless nie jest prawdą. Dlatego cały stan szkicu jest przenoszony
+wewnątrz podpisanego `szkic_id`, a TTL (30 minut) siedzi w payloadzie i jest
+sprawdzany przy weryfikacji. Nie ma czego sprzątać, bo nic nie leży w RAM.
+
+### Rabat jest stosowany po stronie serwera — **zweryfikuj to na pierwszej pro formie**
+
+API Systim nie liczy kwot, więc samo przesłanie pola `rabat` **nie obniżyłoby**
+kwot na dokumencie. Serwer stosuje rabat do ceny jednostkowej każdej pozycji
+i wysyła już obniżone kwoty, a pole `rabat` przekazuje dalej, żeby informacja
+o rabacie pojawiła się na wydruku.
+
+> **Do sprawdzenia przy wdrożeniu:** jeśli Twój szablon wydruku sam odejmuje `rabat`
+> od przesłanych kwot, rabat pokaże się dwukrotnie. Sprawdź to na pierwszej pro
+> formie z rabatem. Jeśli tak się dzieje, usuń przekazywanie pola `rabat`
+> w `internal/systim/invoice.go` — kwoty pozostaną poprawne.
+
+### Waluty obce nie są zaimplementowane
+
+Rodzaje `23`, `25`, `29`, `43` i `44` wymagają dodatkowo pól `waluta`,
+`data_waluty`, `kurs_waluty` i `platnosc_walutowa`. Są **jawnie odrzucane**
+z komunikatem wyjaśniającym, zamiast po cichu wystawiać niepoprawny dokument.
+
+### Kwoty wyłącznie na `decimal.Decimal`
+
+Nigdzie w ścieżce liczenia nie pojawia się `float64` — także na wejściu narzędzi,
+gdzie ilość i cena są przyjmowane jako stringi. Kwoty w odpowiedziach też są
+stringami z dwoma miejscami po przecinku, więc model widzi dokładnie te wartości,
+które trafią na dokument.
+
+### Rekordy kartotek są dekodowane elastycznie
+
+Dokumentacja Systim nie podaje stabilnych nazw pól w metodach listujących. Zamiast
+sztywnej struktury, która po cichu gubiłaby dane, każdy rekord jest spłaszczany do
+mapy `nazwa → wartość`, a pola takie jak nazwa czy NIP są odczytywane z listy
+kandydatów. Nowe albo inaczej nazwane pole nadal dociera do użytkownika.
+
+---
+
+## Struktura
+
+```
+systim-mcp/
+├── cmd/systim-mcp/main.go     # wybór transportu, wiring, shutdown, sonda
+├── internal/
+│   ├── config/                # odczyt i walidacja env
+│   ├── systim/                # klient API: token, retry, dekodowanie JSON
+│   │   ├── client.go
+│   │   ├── types.go           # typy znoszące zmienny kształt JSON
+│   │   ├── rekord.go          # elastyczne dekodowanie rekordów kartotek
+│   │   ├── errors.go
+│   │   ├── metody.go          # metody listujące i PDF
+│   │   └── invoice.go         # addSellInvoice i budowa tablic pozycji
+│   ├── invoicing/             # przeliczenia decimal, stawki VAT, podpisane szkice
+│   ├── auth/                  # resource server: JWKS, walidacja JWT, PRM, Origin
+│   └── tools/                 # definicje narzędzi MCP
+├── deploy/authentik/          # blueprint: provider OAuth2, aplikacja, scope
+├── Dockerfile
+├── docker-compose.yml
+├── .env.example
+└── README.md
+```
+
+## Licencja
+
+Do ustalenia przez właściciela repozytorium.

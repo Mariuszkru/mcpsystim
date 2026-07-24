@@ -1,0 +1,25 @@
+# Sekrety nie mogą trafić do kontekstu budowania.
+.env
+.env.local
+*.pem
+*.key
+
+# Repozytorium i historia.
+.git
+.gitignore
+
+# Rzeczy zbędne w obrazie.
+README.md
+docker-compose.yml
+.dockerignore
+Dockerfile
+deploy/
+data/
+*.pdf
+coverage.out
+.DS_Store
+
+# Artefakty lokalnego budowania.
+/systim-mcp
+/bin/
+/out/

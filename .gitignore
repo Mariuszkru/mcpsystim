@@ -1,0 +1,18 @@
+# Sekrety — nigdy do repozytorium.
+.env
+.env.local
+*.pem
+*.key
+
+# Wyniki budowania.
+/systim-mcp
+/bin/
+/out/
+
+# Pobrane dokumenty.
+/data/
+*.pdf
+
+# Narzędzia.
+.DS_Store
+coverage.out
