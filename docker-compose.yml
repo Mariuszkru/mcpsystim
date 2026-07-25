@@ -17,6 +17,9 @@ services:
     volumes:
       # Pobrane PDF-y przeżywają restart kontenera.
       - faktury:/data/faktury
+      # Logi zapisywane do pliku, gdy ustawiono SYSTIM_LOG_PLIK. Kontener ma
+      # read_only: true, więc bez tego wolumenu proces nie miałby gdzie pisać.
+      - logi:/data/logi
     # Serwer nie potrzebuje żadnych uprawnień poza otwarciem gniazda.
     read_only: true
     security_opt:
@@ -115,5 +118,6 @@ services:
 
 volumes:
   faktury:
+  logi:
   authentik-db:
   authentik-redis:

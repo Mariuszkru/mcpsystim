@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/Mariuszkru/mcpsystim/internal/auth"
 	"github.com/Mariuszkru/mcpsystim/internal/config"
 	"github.com/Mariuszkru/mcpsystim/internal/invoicing"
+	"github.com/Mariuszkru/mcpsystim/internal/logging"
 	"github.com/Mariuszkru/mcpsystim/internal/systim"
 	"github.com/Mariuszkru/mcpsystim/internal/tools"
 )
@@ -89,7 +91,15 @@ func uruchom() error {
 		return err
 	}
 
-	log := zbudujLogger(cfg)
+	log, plikLogu, err := zbudujLogger(cfg)
+	if err != nil {
+		return err
+	}
+	if plikLogu != nil {
+		// Zamykamy dopiero po zatrzymaniu serwera, żeby logi z wyłączania też
+		// trafiły do pliku.
+		defer plikLogu.Close()
+	}
 	slog.SetDefault(log)
 
 	klient, err := systim.NewClient(systim.Opcje{
@@ -136,6 +146,7 @@ func uruchom() error {
 		"katalog_pdf", cfg.KatalogPDF,
 		"stawki_vat", stawki.Dostepne(),
 		"cache_kartotek", cfg.TTLKartotek.String(),
+		"log_plik", cfg.LogPlik,
 	)
 
 	switch cfg.Transport {
@@ -150,12 +161,27 @@ func uruchom() error {
 //
 // Przy stdio strumień stdout należy wyłącznie do protokołu MCP — cokolwiek innego
 // tam trafi, rozsypie sesję.
-func zbudujLogger(cfg *config.Config) *slog.Logger {
-	wyjscie := os.Stdout
+//
+// Gdy ustawiono SYSTIM_LOG_PLIK, logi idą jednocześnie do pliku z rotacją.
+// Strumień standardowy zostaje mimo to: to z niego czyta `docker compose logs`
+// i platforma hostingowa, a plik jest dodatkiem, nie zamiennikiem. Zwracany
+// io.Closer jest nil, gdy zapis do pliku jest wyłączony.
+func zbudujLogger(cfg *config.Config) (*slog.Logger, io.Closer, error) {
+	var wyjscie io.Writer = os.Stdout
 	if cfg.Transport == config.TransportStdio {
 		wyjscie = os.Stderr
 	}
-	return slog.New(slog.NewJSONHandler(wyjscie, &slog.HandlerOptions{Level: cfg.LogLevel}))
+
+	if cfg.LogPlik == "" {
+		return slog.New(slog.NewJSONHandler(wyjscie, &slog.HandlerOptions{Level: cfg.LogLevel})), nil, nil
+	}
+
+	plik, err := logging.NowyPlikZRotacja(cfg.LogPlik, cfg.LogMaxMB, cfg.LogKopie)
+	if err != nil {
+		return nil, nil, err
+	}
+	handler := slog.NewJSONHandler(io.MultiWriter(wyjscie, plik), &slog.HandlerOptions{Level: cfg.LogLevel})
+	return slog.New(handler), plik, nil
 }
 
 // uruchomStdio obsługuje pojedynczą sesję na stdin/stdout.

@@ -205,6 +205,9 @@ znajduje się w [`.env.example`](.env.example).
 | `SYSTIM_TIMEOUT` | `30s` | Timeout wywołania API Systim |
 | `SYSTIM_CACHE_KARTOTEK` | `5m` | Czas życia cache kartotek kontrahentów i produktów; `0` wyłącza |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
+| `SYSTIM_LOG_PLIK` | — | Plik, do którego dublowane są logi; puste = tylko stdout |
+| `SYSTIM_LOG_MAX_MB` | `10` | Rozmiar, po którym plik logu jest rotowany |
+| `SYSTIM_LOG_KOPIE` | `3` | Liczba trzymanych kopii (`.1`, `.2`, `.3`); `0` = brak kopii |
 | `SYSTIM_DOMYSLNA_FORMA_PLATNOSCI` | — | Forma płatności użyta, gdy narzędzie jej nie poda |
 | `SYSTIM_FORMY_PLATNOSCI` | standardowe ID | Mapa `nazwa → ID` formy płatności |
 | `SYSTIM_PUBLIC_URL` | — | Publiczny adres HTTPS serwera |
@@ -639,6 +642,9 @@ mockujących. Pokrywają między innymi:
   half-away-from-zero.
 - **Żądanie `addSellInvoice`:** asercja, że w ciele są klucze `opis[0]`, `ilosc[0]`
   itd. w konwencji PHP, a nie JSON.
+- **Plik logu:** rotacja po przekroczeniu rozmiaru, przesuwanie i kasowanie
+  najstarszych kopii, wariant bez kopii, dopisywanie po restarcie z zachowaniem
+  rozmiaru oraz 400 równoległych zapisów bez zgubionego bajtu (pod `-race`).
 - **Cache kartotek:** kolejne odczyty idą z cache, po TTL kartoteka jest pobierana
   ponownie, 16 równoległych odczytów daje **jedno** pobranie (pod `-race`), brak
   trafienia wymusza dokładnie jedno odświeżenie, a `przygotuj_fakture` po
@@ -750,6 +756,30 @@ po prostu nie ma.
 Faktury (`lista_faktur`) **nie są cache'owane**: to narzędzie służy do weryfikacji,
 czy dokument faktycznie powstał, więc musi widzieć stan bieżący.
 
+### Logi idą na stdout, a do pliku tylko na życzenie
+
+Domyślnie logi trafiają na stdout i zbiera je Docker — `docker compose logs`
+wystarcza, dopóki nie trzeba ich przeglądać po przebudowaniu kontenera albo
+podać czemuś ścieżkę.
+
+`SYSTIM_LOG_PLIK` włącza dodatkowy zapis do pliku. **Dodatkowy, nie zamienny**:
+strumień standardowy zostaje, bo to z niego czyta platforma hostingowa i sam
+`docker compose logs`. Ścieżka musi wskazywać na zamontowany wolumen — kontener
+działa z `read_only: true` i poza wolumenami nie ma gdzie pisać. W dołączonym
+`docker-compose.yml` służy do tego wolumen `logi` pod `/data/logi`, a katalog
+istnieje już w obrazie, dzięki czemu wolumen dziedziczy właściciela 65532 i nie
+trzeba go ręcznie `chown`ować.
+
+Rotacja jest zrobiona w serwerze, a nie zostawiona logrotate: obraz jest
+distroless, więc nie ma w nim ani powłoki, ani crona, które mogłyby plik obrócić.
+Bez tego plik na wolumenie rósłby bez końca. Domyślne 10 MB × 3 kopie
+odpowiadają ustawieniom sterownika `json-file` w `docker-compose.yml`, żeby oba
+mechanizmy trzymały tyle samo historii.
+
+> **`LOG_LEVEL=debug` loguje pełne ciało żądań do Systim** — nazwy pozycji, kwoty
+> i ID kontrahenta. Hasło i token są maskowane, ale reszta to dane handlowe
+> klientów, więc debug włączaj na czas diagnozy, a nie na stałe.
+
 ### Czas każdego wywołania API trafia do logów
 
 Przy `LOG_LEVEL=debug` każde wywołanie Systim loguje `czas_ms` i rozmiar
@@ -773,6 +803,7 @@ mcpsystim/
 │   │   └── invoice.go         # addSellInvoice i budowa tablic pozycji
 │   ├── invoicing/             # przeliczenia decimal, stawki VAT, podpisane szkice
 │   ├── auth/                  # resource server: JWKS, walidacja JWT, PRM, Origin
+│   ├── logging/               # zapis logów do pliku z rotacją po rozmiarze
 │   └── tools/                 # definicje narzędzi MCP
 ├── deploy/authentik/          # blueprint: provider OAuth2, aplikacja, scope
 ├── Dockerfile

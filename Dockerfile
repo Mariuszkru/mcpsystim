@@ -32,9 +32,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       ./cmd/systim-mcp
 
 # Sprawdzenie poprawności testów jest w CI, nie tutaj — build ma być szybki.
-# Katalog na PDF-y tworzymy w etapie budowania, bo distroless nie ma powłoki
-# ani mkdir, a proces działa jako użytkownik bez prawa zapisu w /.
-RUN mkdir -p /out/data/faktury && chown -R 65532:65532 /out/data
+# Katalogi na PDF-y i na logi tworzymy w etapie budowania, bo distroless nie ma
+# powłoki ani mkdir, a proces działa jako użytkownik bez prawa zapisu w /.
+# Ich obecność w obrazie ma jeszcze jeden skutek: nazwany wolumen montowany w to
+# miejsce dziedziczy właściciela z obrazu, więc zapis działa bez ręcznego chown.
+RUN mkdir -p /out/data/faktury /out/data/logi && chown -R 65532:65532 /out/data
 
 # Etap finalny.
 #
@@ -53,7 +55,7 @@ WORKDIR /
 
 EXPOSE 8000
 
-VOLUME ["/data/faktury"]
+VOLUME ["/data/faktury", "/data/logi"]
 
 ENV SYSTIM_TRANSPORT=http \
     SYSTIM_ADDR=:8000 \

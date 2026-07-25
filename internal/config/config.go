@@ -40,6 +40,10 @@ const (
 	DomyslnyMaxPozycji = 200
 	// DomyslnyMaxCialo ogranicza rozmiar żądania HTTP do /mcp.
 	DomyslnyMaxCialo int64 = 4 << 20 // 4 MiB
+	// DomyslnyLogMaxMB i DomyslnyLogKopie odpowiadają ustawieniom sterownika
+	// json-file w docker-compose.yml, żeby oba mechanizmy trzymały tyle samo.
+	DomyslnyLogMaxMB = 10
+	DomyslnyLogKopie = 3
 )
 
 // Config to komplet ustawień serwera.
@@ -77,6 +81,13 @@ type Config struct {
 	KatalogPDF string
 	PublicURL  string
 	LogLevel   slog.Level
+	// LogPlik to ścieżka pliku, do którego dublowane są logi. Puste wyłącza zapis
+	// do pliku — logi idą wtedy wyłącznie na stdout, tak jak wcześniej.
+	LogPlik string
+	// LogMaxMB to rozmiar, po którym plik logu jest rotowany.
+	LogMaxMB int
+	// LogKopie to liczba trzymanych starych plików logu.
+	LogKopie int
 
 	// Bezpieczeństwo.
 	SzkicKlucz   []byte
@@ -159,6 +170,14 @@ func Wczytaj() (*Config, error) {
 		}
 	}
 	c.LogLevel = wczytajPoziomLogow(&z)
+	c.LogPlik = strings.TrimSpace(os.Getenv("SYSTIM_LOG_PLIK"))
+	if c.LogPlik != "" && !filepath.IsAbs(c.LogPlik) {
+		if abs, err := filepath.Abs(c.LogPlik); err == nil {
+			c.LogPlik = abs
+		}
+	}
+	c.LogMaxMB = wczytajInt(&z, "SYSTIM_LOG_MAX_MB", DomyslnyLogMaxMB)
+	c.LogKopie = wczytajIntNieujemny(&z, "SYSTIM_LOG_KOPIE", DomyslnyLogKopie)
 
 	// --- bezpieczeństwo ---
 	c.AuthDisabled = wczytajBool(&z, "SYSTIM_AUTH_DISABLED", false)
@@ -347,6 +366,25 @@ func wczytajInt(z *zbieraczBledow, nazwa string, domyslny int) int {
 	}
 	if n <= 0 {
 		z.dodaj("%s = %d musi być większe od zera", nazwa, n)
+		return domyslny
+	}
+	return n
+}
+
+// wczytajIntNieujemny działa jak wczytajInt, ale dopuszcza zero — używane tam,
+// gdzie zero jest sensowną wartością, a nie brakiem ustawienia.
+func wczytajIntNieujemny(z *zbieraczBledow, nazwa string, domyslny int) int {
+	raw := strings.TrimSpace(os.Getenv(nazwa))
+	if raw == "" {
+		return domyslny
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		z.dodaj("%s = %q nie jest liczbą całkowitą", nazwa, raw)
+		return domyslny
+	}
+	if n < 0 {
+		z.dodaj("%s = %d nie może być ujemne", nazwa, n)
 		return domyslny
 	}
 	return n
