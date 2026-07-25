@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mkrukowski/systim-mcp/internal/systim"
 )
 
 // Transport określa sposób komunikacji z klientem MCP.
@@ -59,15 +61,8 @@ type Config struct {
 	IDNumeracji map[int]string
 	VatIDs      map[string]int
 	Timeout     time.Duration
-	// FormaPlatnosciJakoID przełącza format pola forma_platnosci wysyłanego do API.
-	//
-	// Dokumentacja Systim mówi, że pole przyjmuje nazwę tekstową, ale nazwa nie
-	// odnosi żadnego skutku — dokumenty z API dostają gotówkę niezależnie od
-	// przesłanej wartości. Ten przełącznik pozwala sprawdzić, czy dokumentacja
-	// nie jest po prostu nieaktualna i pole nie oczekuje ID, tak jak stawka_vat.
-	FormaPlatnosciJakoID bool
-	// FormyPlatnosciIDs mapuje nazwę formy płatności na jej ID w Systim.
-	// Używane tylko przy FormaPlatnosciJakoID.
+	// FormyPlatnosciIDs mapuje nazwę formy płatności na jej ID w kartotece Systim.
+	// Domyślnie systim.IDFormyPlatnosci, nadpisywalne przez SYSTIM_FORMY_PLATNOSCI.
 	FormyPlatnosciIDs map[string]string
 	// DomyslnaFormaPlatnosci jest używana, gdy narzędzie nie poda formy płatności.
 	// Puste oznacza „nie wysyłaj pola" — wtedy zadziała wartość domyślna Systim.
@@ -145,7 +140,6 @@ func Wczytaj() (*Config, error) {
 	}
 
 	c.DomyslnaFormaPlatnosci = wczytajFormePlatnosci(&z)
-	c.FormaPlatnosciJakoID = wczytajFormatFormyPlatnosci(&z)
 	c.FormyPlatnosciIDs = wczytajFormyPlatnosciIDs(&z)
 	c.VatIDs = wczytajVatIDs(&z)
 	c.Timeout = wczytajCzas(&z, "SYSTIM_TIMEOUT", DomyslnyTimeout)
@@ -470,11 +464,6 @@ func przykladMapy(domyslne map[int]int) string {
 	return "{" + strings.Join(czesci, ",") + "}"
 }
 
-// FormyPlatnosci to wartości akceptowane przez pole forma_platnosci w API Systim.
-var FormyPlatnosci = []string{
-	"przelew", "gotówka", "barter", "za pobraniem", "rozliczenie saldami", "karta płatnicza",
-}
-
 // wczytajFormePlatnosci odczytuje domyślną formę płatności.
 //
 // Pole jest opcjonalne, ale warto je ustawić: pominięcie formy płatności przy
@@ -485,51 +474,20 @@ func wczytajFormePlatnosci(z *zbieraczBledow) string {
 	if v == "" {
 		return ""
 	}
-	for _, d := range FormyPlatnosci {
+	for _, d := range systim.FormyPlatnosci {
 		if strings.EqualFold(v, d) {
 			return d
 		}
 	}
 	z.dodaj("SYSTIM_DOMYSLNA_FORMA_PLATNOSCI = %q nie jest obsługiwaną formą płatności; dozwolone: %s",
-		v, strings.Join(FormyPlatnosci, ", "))
+		v, strings.Join(systim.FormyPlatnosci, ", "))
 	return ""
-}
-
-// FormyPlatnosciDomyslne mapuje nazwę formy płatności na jej ID w Systim.
-//
-// Wartości z kartoteki Systim (panel → Ustawienia → Rodzaje płatności).
-// Kolejność ID 1–6 odpowiada liście dozwolonych nazw z dokumentacji API.
-var FormyPlatnosciDomyslne = map[string]int{
-	"przelew":             1,
-	"gotówka":             2,
-	"barter":              3,
-	"za pobraniem":        4,
-	"rozliczenie saldami": 5,
-	"karta płatnicza":     6,
-}
-
-// wczytajFormatFormyPlatnosci odczytuje SYSTIM_FORMA_PLATNOSCI_FORMAT.
-//
-// Domyślnie "nazwa", czyli zachowanie zgodne z dokumentacją Systim. Wartość "id"
-// przełącza na wysyłanie identyfikatora z kartoteki rodzajów płatności — służy do
-// sprawdzenia, czy dokumentacja nie jest nieaktualna.
-func wczytajFormatFormyPlatnosci(z *zbieraczBledow) bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("SYSTIM_FORMA_PLATNOSCI_FORMAT")))
-	switch v {
-	case "", "nazwa":
-		return false
-	case "id":
-		return true
-	default:
-		z.dodaj("SYSTIM_FORMA_PLATNOSCI_FORMAT = %q; dozwolone wartości to nazwa albo id", v)
-		return false
-	}
 }
 
 // wczytajFormyPlatnosciIDs odczytuje mapowanie nazwa formy płatności → ID.
 func wczytajFormyPlatnosciIDs(z *zbieraczBledow) map[string]string {
-	out := make(map[string]string, len(FormyPlatnosciDomyslne))
-	for nazwa, id := range FormyPlatnosciDomyslne {
+	out := make(map[string]string, len(systim.IDFormyPlatnosci))
+	for nazwa, id := range systim.IDFormyPlatnosci {
 		out[nazwa] = strconv.Itoa(id)
 	}
 
@@ -547,7 +505,7 @@ func wczytajFormyPlatnosciIDs(z *zbieraczBledow) map[string]string {
 		nazwa := strings.ToLower(strings.TrimSpace(k))
 		if !dozwolonaNazwaFormy(nazwa) {
 			z.dodaj("SYSTIM_FORMY_PLATNOSCI: %q nie jest obsługiwaną formą płatności; dozwolone: %s",
-				k, strings.Join(FormyPlatnosci, ", "))
+				k, strings.Join(systim.FormyPlatnosci, ", "))
 			continue
 		}
 		id := strings.Trim(strings.TrimSpace(string(v)), `"`)
@@ -562,7 +520,7 @@ func wczytajFormyPlatnosciIDs(z *zbieraczBledow) map[string]string {
 }
 
 func dozwolonaNazwaFormy(nazwa string) bool {
-	for _, d := range FormyPlatnosci {
+	for _, d := range systim.FormyPlatnosci {
 		if strings.EqualFold(nazwa, d) {
 			return true
 		}
@@ -570,17 +528,18 @@ func dozwolonaNazwaFormy(nazwa string) bool {
 	return false
 }
 
-// WartoscFormyPlatnosci zwraca wartość do wysłania w polu forma_platnosci —
-// nazwę albo ID, zależnie od SYSTIM_FORMA_PLATNOSCI_FORMAT.
-func (c *Config) WartoscFormyPlatnosci(nazwa string) string {
-	nazwa = strings.TrimSpace(nazwa)
-	if nazwa == "" || !c.FormaPlatnosciJakoID {
-		return nazwa
+// FormaPlatnosciID zwraca ID formy płatności do wysłania w polu forma_platnosci.
+//
+// Drugi zwracany parametr mówi, czy mapowanie istnieje. Gdy go nie ma, pola nie
+// wysyłamy — lepiej zostawić wartość domyślną Systim niż wysłać nazwę, której
+// API nie honoruje.
+func (c *Config) FormaPlatnosciID(nazwa string) (string, bool) {
+	nazwa = strings.ToLower(strings.TrimSpace(nazwa))
+	if nazwa == "" {
+		return "", false
 	}
-	if id, ok := c.FormyPlatnosciIDs[strings.ToLower(nazwa)]; ok {
-		return id
-	}
-	return nazwa
+	id, ok := c.FormyPlatnosciIDs[nazwa]
+	return id, ok
 }
 
 // DomyslneScopesZadane to scope'y doklejane do OIDC_SCOPE przy ogłaszaniu ich

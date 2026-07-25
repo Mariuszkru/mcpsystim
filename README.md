@@ -203,8 +203,7 @@ znajduje się w [`.env.example`](.env.example).
 | `SYSTIM_TIMEOUT` | `30s` | Timeout wywołania API Systim |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `SYSTIM_DOMYSLNA_FORMA_PLATNOSCI` | — | Forma płatności użyta, gdy narzędzie jej nie poda |
-| `SYSTIM_FORMA_PLATNOSCI_FORMAT` | `nazwa` | `nazwa` (wg dokumentacji) albo `id` — do sprawdzenia, czy dokumentacja jest aktualna |
-| `SYSTIM_FORMY_PLATNOSCI` | standardowe ID | Mapa `nazwa → ID`; używana tylko przy formacie `id` |
+| `SYSTIM_FORMY_PLATNOSCI` | standardowe ID | Mapa `nazwa → ID` formy płatności |
 | `SYSTIM_PUBLIC_URL` | — | Publiczny adres HTTPS serwera |
 | `SYSTIM_SZKIC_KLUCZ` | — | Klucz HMAC, min. 32 bajty |
 | `OIDC_ISSUER` | — | Issuer authentika, z ukośnikiem: `https://auth.recoop.pl/application/o/<slug>/` |
@@ -488,54 +487,39 @@ refresh_token]`. Zastosuj go ponownie albo uzupełnij pole ręcznie w authentiku
 Uwaga przy blueprintach: po zmianie pliku warto zrestartować kontener
 `authentik-worker` — to on je stosuje, a wykrycie zmiany bywa opóźnione.
 
-### Forma płatności zawsze wychodzi jako gotówka
+### Forma płatności wychodzi jako gotówka
 
-**To ograniczenie po stronie Systim, nie konfiguracji.** API przyjmuje pole
-`forma_platnosci` bez żadnego błędu, ale je ignoruje — każdy dokument utworzony
-przez API dostaje gotówkę.
+**Dokumentacja Systim jest w tym miejscu nieaktualna.** Opisuje `forma_platnosci`
+jako pole przyjmujące nazwę tekstową (`przelew`, `gotówka`, …), ale nazwa nie
+odnosi żadnego skutku — API przyjmuje ją bez błędu i wstawia gotówkę.
+**Pole oczekuje ID**, tak samo jak `stawka_vat`, `id_numeracji` i `id_szablonu`.
 
-Sprawdzone na żywym koncie, wszystkie sześć form plus wariant z pominiętym polem:
+Sprawdzone na żywym koncie, wszystkie sześć form, po jednym dokumencie na każdą:
 
-| Co wysłano | Co zapisał Systim |
-|---|---|
-| `przelew` (nazwa, zgodnie z dokumentacją) | gotówka |
-| `gotówka`, `barter`, `za pobraniem`, `rozliczenie saldami`, `karta płatnicza` | gotówka |
-| ID zamiast nazwy (1–6) | gotówka |
-| pole pominięte | gotówka |
+| Forma | Wysłane ID | Zapisane w Systim |
+|---|---|---|
+| przelew | 1 | **1** ✓ |
+| gotówka | 2 | **2** ✓ |
+| barter | 3 | **3** ✓ |
+| za pobraniem | 4 | **4** ✓ |
+| rozliczenie saldami | 5 | **5** ✓ |
+| karta płatnicza | 6 | **6** ✓ |
 
-Dla porównania: dokumenty tworzone **ręcznie w panelu** dostają przelew (ID 1),
-a przelew jest w panelu oznaczony jako forma domyślna. Ustawienie to nie dotyczy
-ścieżki API.
+Dla porównania: 20 wcześniejszych dokumentów wysłanych z **nazwą** dostało `2`
+(gotówka) — bez wyjątku, niezależnie od tego, którą formę podano.
 
-`przygotuj_fakture` ostrzega o tym w podglądzie za każdym razem, gdy poda się
-formę płatności — żeby nikt nie odkrył tego dopiero na wydruku. Formę zapisaną
-na dokumencie pokazuje `lista_faktur` (jako ID: 1 przelew, 2 gotówka, 3 barter,
-4 za pobraniem, 5 rozliczenie saldami, 6 karta płatnicza).
+Serwer wysyła ID zawsze — wariant z nazwą nie jest wspierany, bo produkuje
+dokumenty z błędną formą płatności. Jeśli Twoje konto ma inną kartotekę rodzajów
+płatności, nadpisz ID przez `SYSTIM_FORMY_PLATNOSCI`; przy braku mapowania pole
+nie jest wysyłane, a `przygotuj_fakture` o tym ostrzega.
 
-#### Wariant do sprawdzenia: może dokumentacja jest nieaktualna
-
-Systim konsekwentnie oczekuje **identyfikatorów** tam, gdzie dokumentacja pokazuje
-nazwy — tak jest przy `stawka_vat`, `id_numeracji` i `id_szablonu`. Możliwe więc,
-że `forma_platnosci` też chce ID, a dokumentacja po prostu za tym nie nadążyła.
-
-Przełącznik pozwala to sprawdzić bez zmiany kodu:
+Warto ustawić też domyślną formę, żeby pominięcie pola nie dawało gotówki:
 
 ```
-SYSTIM_FORMA_PLATNOSCI_FORMAT=id
+SYSTIM_DOMYSLNA_FORMA_PLATNOSCI=przelew
 ```
 
-Serwer wyśle wtedy identyfikator z kartoteki rodzajów płatności zamiast nazwy
-(przelew 1, gotówka 2, barter 3, za pobraniem 4, rozliczenie saldami 5,
-karta płatnicza 6). Podgląd w `przygotuj_fakture` nadal pokazuje nazwę — ID jest
-szczegółem transportu. Jeśli Twoje konto ma inne ID, nadpisz je przez
-`SYSTIM_FORMY_PLATNOSCI`.
-
-Wynik sprawdzisz przez `lista_faktur`: pole `forma_platnosci` ma pokazać `1` dla
-przelewu zamiast `2`.
-
-Do czasu wyjaśnienia formę płatności trzeba poprawiać w panelu. Jeśli wariant z ID
-też nie zadziała, warto zgłosić to wsparciu Systim — dokumentacja jasno opisuje
-to pole jako działające.
+Formę zapisaną na dokumencie pokazuje `lista_faktur` (jako ID z tabeli powyżej).
 
 ### „Błędne przypisanie rodzaju dokumentu do numeracji"
 

@@ -239,13 +239,11 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		wy.Ostrzezenia = append(wy.Ostrzezenia,
 			"Dokument zostanie wysłany do KSeF zaraz po wystawieniu.")
 	}
-	if formaPlatnosci != "" {
+	// Ostrzegamy tylko wtedy, gdy forma faktycznie nie trafi na dokument.
+	if _, ok := s.cfg.FormaPlatnosciID(formaPlatnosci); formaPlatnosci != "" && !ok {
 		wy.Ostrzezenia = append(wy.Ostrzezenia, fmt.Sprintf(
-			"Forma płatności %q może NIE zostać zapisana na dokumencie. "+
-				"Sprawdzone na żywym koncie: API Systim przyjmuje to pole bez błędu, ale "+
-				"ignoruje je i wszystkim dokumentom tworzonym przez API ustawia gotówkę — "+
-				"zarówno przy przesłaniu nazwy zgodnej z dokumentacją, jak i ID. "+
-				"Zweryfikuj formę płatności w panelu i popraw ją tam, jeśli ma znaczenie.",
+			"Forma płatności %q nie ma przypisanego ID, więc NIE zostanie zapisana na "+
+				"dokumencie — Systim wstawi gotówkę. Uzupełnij SYSTIM_FORMY_PLATNOSCI.",
 			formaPlatnosci))
 	}
 	if we.Rodzaj == systim.RodzajFakturaVAT {
@@ -384,6 +382,10 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		return nil, WyjscieZatwierdz{}, err
 	}
 
+	// Do API idzie ID formy płatności, nie jej nazwa. Brak mapowania oznacza,
+	// że pola nie wysyłamy — użytkownik został o tym ostrzeżony w podglądzie.
+	idFormyPlatnosci, _ := s.cfg.FormaPlatnosciID(dok.FormaPlatnosci)
+
 	zadanie := systim.ZadanieFaktury{
 		IDKontrahenta:   dok.IDKontrahenta,
 		DataWystawienia: dok.DataWystawienia,
@@ -393,7 +395,7 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		IDNumeracji:     idNumeracji,
 		Pozycje:         invoicing.NaPozycjeSystim(dok.Pozycje),
 		TerminPlatnosci: dok.TerminPlatnosci,
-		FormaPlatnosci:  s.cfg.WartoscFormyPlatnosci(dok.FormaPlatnosci),
+		FormaPlatnosci:  idFormyPlatnosci,
 		Uwagi:           dok.Uwagi,
 		Rabat:           dok.Rabat,
 		WyslijEmail:     we.WyslijEmail,

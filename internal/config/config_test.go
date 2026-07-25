@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mkrukowski/systim-mcp/internal/systim"
 )
 
 // ustawMinimalne ustawia komplet zmiennych wymaganych do poprawnego startu w trybie http.
@@ -582,63 +584,78 @@ func TestDomyslnaFormaPlatnosciOpcjonalnaIWalidowana(t *testing.T) {
 	}
 }
 
-func TestFormatFormyPlatnosciNazwaAlboID(t *testing.T) {
-	// Dokumentacja Systim mówi „nazwa", ale nazwa nie odnosi skutku. Przełącznik
-	// pozwala sprawdzić wariant z ID bez zmiany kodu.
+func TestFormaPlatnosciIDMaWartosciDomyslne(t *testing.T) {
+	// Pole forma_platnosci przyjmuje ID, mimo że dokumentacja Systim opisuje je
+	// jako przyjmujące nazwę. Sprawdzone na żywym koncie na wszystkich sześciu
+	// formach — nazwa zawsze dawała gotówkę, ID zapisuje się poprawnie.
 	ustawMinimalne(t)
 	c, err := Wczytaj()
 	if err != nil {
 		t.Fatalf("Wczytaj = %v", err)
-	}
-	if c.FormaPlatnosciJakoID {
-		t.Error("domyślnie ma obowiązywać format zgodny z dokumentacją, czyli nazwa")
-	}
-	if got := c.WartoscFormyPlatnosci("przelew"); got != "przelew" {
-		t.Errorf("WartoscFormyPlatnosci = %q, chcę przelew", got)
-	}
-
-	ustawMinimalne(t)
-	t.Setenv("SYSTIM_FORMA_PLATNOSCI_FORMAT", "id")
-	c, err = Wczytaj()
-	if err != nil {
-		t.Fatalf("Wczytaj = %v", err)
-	}
-	if !c.FormaPlatnosciJakoID {
-		t.Fatal("FormaPlatnosciJakoID = false, chcę true")
 	}
 	for nazwa, chce := range map[string]string{
 		"przelew": "1", "gotówka": "2", "barter": "3",
 		"za pobraniem": "4", "rozliczenie saldami": "5", "karta płatnicza": "6",
 	} {
-		if got := c.WartoscFormyPlatnosci(nazwa); got != chce {
-			t.Errorf("WartoscFormyPlatnosci(%q) = %q, chcę %q", nazwa, got, chce)
+		got, ok := c.FormaPlatnosciID(nazwa)
+		if !ok || got != chce {
+			t.Errorf("FormaPlatnosciID(%q) = %q/%v, chcę %q", nazwa, got, ok, chce)
 		}
 	}
-	// Wielkość liter nie ma znaczenia.
-	if got := c.WartoscFormyPlatnosci("PRZELEW"); got != "1" {
-		t.Errorf("WartoscFormyPlatnosci(PRZELEW) = %q, chcę 1", got)
+	if got, ok := c.FormaPlatnosciID("PRZELEW"); !ok || got != "1" {
+		t.Errorf("FormaPlatnosciID(PRZELEW) = %q/%v, chcę 1", got, ok)
+	}
+	if _, ok := c.FormaPlatnosciID("blik"); ok {
+		t.Error("nieznana forma płatności została rozpoznana")
+	}
+	if _, ok := c.FormaPlatnosciID(""); ok {
+		t.Error("pusta forma płatności została rozpoznana")
 	}
 }
 
-func TestFormatFormyPlatnosciWalidacjaINadpisanie(t *testing.T) {
+func TestFormaPlatnosciIDMoznaNadpisac(t *testing.T) {
 	ustawMinimalne(t)
-	t.Setenv("SYSTIM_FORMA_PLATNOSCI_FORMAT", "cokolwiek")
-	if _, err := Wczytaj(); err == nil {
-		t.Fatal("Wczytaj = nil, chcę błędu dla nieznanego formatu")
-	}
-
-	// ID da się nadpisać, gdy konto ma inną kartotekę.
-	ustawMinimalne(t)
-	t.Setenv("SYSTIM_FORMA_PLATNOSCI_FORMAT", "id")
 	t.Setenv("SYSTIM_FORMY_PLATNOSCI", `{"przelew":9}`)
+
 	c, err := Wczytaj()
 	if err != nil {
 		t.Fatalf("Wczytaj = %v", err)
 	}
-	if got := c.WartoscFormyPlatnosci("przelew"); got != "9" {
-		t.Errorf("WartoscFormyPlatnosci(przelew) = %q, chcę 9", got)
+	if got, _ := c.FormaPlatnosciID("przelew"); got != "9" {
+		t.Errorf("FormaPlatnosciID(przelew) = %q, chcę 9 z nadpisania", got)
 	}
-	if got := c.WartoscFormyPlatnosci("gotówka"); got != "2" {
-		t.Errorf("WartoscFormyPlatnosci(gotówka) = %q, chcę 2 z wartości domyślnych", got)
+	// Pozostałe zostają domyślne.
+	if got, _ := c.FormaPlatnosciID("gotówka"); got != "2" {
+		t.Errorf("FormaPlatnosciID(gotówka) = %q, chcę 2", got)
+	}
+}
+
+func TestFormyPlatnosciWartosciNiepoprawne(t *testing.T) {
+	for _, p := range []struct{ wartosc, fragment string }{
+		{`{"blik":1}`, "nie jest obsługiwaną formą"},
+		{`{"przelew":"jeden"}`, "nie jest dodatnią"},
+		{`nie-json`, "poprawnym JSON-em"},
+	} {
+		t.Run(p.wartosc, func(t *testing.T) {
+			ustawMinimalne(t)
+			t.Setenv("SYSTIM_FORMY_PLATNOSCI", p.wartosc)
+			if _, err := Wczytaj(); err == nil || !strings.Contains(err.Error(), p.fragment) {
+				t.Errorf("err = %v, chcę wzmianki o %q", err, p.fragment)
+			}
+		})
+	}
+}
+
+func TestListaFormPlatnosciNieJestZduplikowana(t *testing.T) {
+	// Jedno źródło prawdy: nazwy i ID mieszkają w pakiecie systim, bo to wiedza
+	// o API. config tylko je waliduje i pozwala nadpisać.
+	if len(systim.FormyPlatnosci) != len(systim.IDFormyPlatnosci) {
+		t.Errorf("lista nazw ma %d pozycji, mapa ID %d — rozjazd",
+			len(systim.FormyPlatnosci), len(systim.IDFormyPlatnosci))
+	}
+	for _, nazwa := range systim.FormyPlatnosci {
+		if _, ok := systim.IDFormyPlatnosci[nazwa]; !ok {
+			t.Errorf("forma %q nie ma przypisanego ID", nazwa)
+		}
 	}
 }

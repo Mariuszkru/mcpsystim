@@ -81,9 +81,26 @@ func opisRodzajow() string {
 	return strings.Join(czesci, ", ")
 }
 
-// FormyPlatnosci to wartości akceptowane przez pole forma_platnosci.
+// FormyPlatnosci to nazwy form płatności, którymi posługuje się użytkownik
+// narzędzia. Do API trafia odpowiadające im ID — patrz IDFormyPlatnosci.
 var FormyPlatnosci = []string{
 	"przelew", "gotówka", "barter", "za pobraniem", "rozliczenie saldami", "karta płatnicza",
+}
+
+// IDFormyPlatnosci mapuje nazwę formy płatności na jej ID w kartotece Systim
+// (panel → Ustawienia → Rodzaje płatności).
+//
+// Pole forma_platnosci przyjmuje ID, mimo że dokumentacja Systim opisuje je jako
+// przyjmujące nazwę. Sprawdzone na żywym koncie na wszystkich sześciu formach:
+// przy ID każda zapisuje się poprawnie, przy nazwie wszystkie lądują na gotówce.
+// To ten sam wzorzec co przy stawka_vat, id_numeracji i id_szablonu.
+var IDFormyPlatnosci = map[string]int{
+	"przelew":             1,
+	"gotówka":             2,
+	"barter":              3,
+	"za pobraniem":        4,
+	"rozliczenie saldami": 5,
+	"karta płatnicza":     6,
 }
 
 // PozycjaFaktury to jedna linia dokumentu z policzonymi już kwotami.
@@ -113,8 +130,9 @@ type ZadanieFaktury struct {
 	Pozycje         []PozycjaFaktury
 
 	TerminPlatnosci int // w dniach; 0 = nie wysyłamy pola
-	FormaPlatnosci  string
-	Uwagi           string
+	// FormaPlatnosci to ID formy płatności z kartoteki Systim, a nie jej nazwa.
+	FormaPlatnosci string
+	Uwagi          string
 	// Rabat to procent bez znaku %. UWAGA: NIE jest wysyłany do API — patrz
 	// komentarz przy BudujParametryFaktury. Kwoty są już po rabacie.
 	Rabat        string
