@@ -36,7 +36,7 @@ type WejsciePrzygotuj struct {
 	Pozycje         []WejsciePozycja `json:"pozycje" jsonschema:"Pozycje dokumentu. Musi być co najmniej jedna"`
 
 	DataSprzedazy string `json:"data_sprzedazy,omitempty" jsonschema:"Data sprzedaży w formacie RRRR-MM-DD. Jeśli pominięta, przyjmowana jest data wystawienia"`
-	Rodzaj        int    `json:"rodzaj,omitempty" jsonschema:"Rodzaj dokumentu: 0 faktura VAT (domyślnie), 1 pro forma, 22 rachunek, 6 paragon fiskalny, 15 paragon niefiskalny, 26 oferta. Faktury w walucie obcej nie są obsługiwane"`
+	Rodzaj        int    `json:"rodzaj,omitempty" jsonschema:"Rodzaj dokumentu: 0 faktura VAT (domyślnie), 1 pro forma, 22 rachunek, 15 paragon, 26 oferta. Rodzaj 6 (paragon fiskalny) wymaga wersji Pro programu Systim i na zwykłym koncie zostanie odrzucony. Faktury w walucie obcej nie są obsługiwane"`
 
 	TerminPlatnosci int    `json:"termin_platnosci,omitempty" jsonschema:"Termin płatności liczony w DNIACH od daty wystawienia, np. 14. Nie podawaj daty"`
 	FormaPlatnosci  string `json:"forma_platnosci,omitempty" jsonschema:"Forma płatności — jedna z: przelew, gotówka, barter, za pobraniem, rozliczenie saldami, karta płatnicza. Gdy pominiesz to pole, użyta zostanie domyślna forma z konfiguracji serwera, a jeśli i tej nie ma — wartość domyślna Systim, czyli gotówka"`
@@ -80,6 +80,7 @@ type WyjsciePrzygotuj struct {
 	DataSprzedazy    string `json:"data_sprzedazy" jsonschema:"Data sprzedaży"`
 	TerminPlatnosci  string `json:"termin_platnosci,omitempty" jsonschema:"Termin płatności wraz z wyliczoną datą"`
 	FormaPlatnosci   string `json:"forma_platnosci,omitempty" jsonschema:"Forma płatności"`
+	Uwagi            string `json:"uwagi,omitempty" jsonschema:"Uwagi, które zostaną wydrukowane na dokumencie"`
 
 	Pozycje      []PozycjaPodgladu `json:"pozycje" jsonschema:"Pozycje z policzonymi kwotami"`
 	WedlugStawek []WierszStawki    `json:"wedlug_stawek" jsonschema:"Zestawienie sum według stawek VAT"`
@@ -191,6 +192,7 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		DataWystawienia:  dataWystawienia,
 		DataSprzedazy:    dataSprzedazy,
 		FormaPlatnosci:   formaPlatnosci,
+		Uwagi:            strings.TrimSpace(we.Uwagi),
 		RazemNetto:       sumy.Netto.StringFixed(2),
 		RazemVAT:         sumy.VAT.StringFixed(2),
 		RazemBrutto:      sumy.Brutto.StringFixed(2),
@@ -291,6 +293,9 @@ func podgladTekstowy(w WyjsciePrzygotuj) string {
 	}
 	if w.FormaPlatnosci != "" {
 		fmt.Fprintf(&b, "Płatność:    %s\n", w.FormaPlatnosci)
+	}
+	if w.Uwagi != "" {
+		fmt.Fprintf(&b, "Uwagi:       %s\n", w.Uwagi)
 	}
 
 	b.WriteString("\nPozycje:\n")

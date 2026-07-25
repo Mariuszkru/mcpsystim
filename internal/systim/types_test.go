@@ -300,3 +300,26 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestKomunikatKodu6WymieniaTrzyPrzyczyny(t *testing.T) {
+	// Systim używa kodu 6 nie tylko dla braków w polach: także gdy ID nie istnieje
+	// oraz gdy operacja wymaga wyższej wersji programu (np. paragony fiskalne
+	// wymagają wersji Pro). Potwierdzone na żywym koncie.
+	err := &SystimError{
+		Code:    KodBlednePola,
+		Message: "Paragony fiskalne mogą być wystawiane wyłącznie w wersji Pro.",
+		Fields:  []string{"othr"},
+		Act:     "addSellInvoice",
+	}
+	k := err.KomunikatPL()
+
+	// Treść od Systim musi iść pierwsza — to ona podaje właściwy powód.
+	if !contains(k, "wersji Pro") {
+		t.Errorf("KomunikatPL = %q, gubi komunikat od Systim", k)
+	}
+	for _, fragment := range []string{"id_kontrahenta", "wyższej wersji programu", "othr"} {
+		if !contains(k, fragment) {
+			t.Errorf("KomunikatPL = %q, brakuje %q", k, fragment)
+		}
+	}
+}

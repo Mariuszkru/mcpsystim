@@ -1307,3 +1307,74 @@ func TestPoprawnaFormaPlatnosciNieGenerujeOstrzezenia(t *testing.T) {
 		t.Errorf("niepotrzebne ostrzeżenie przy poprawnej konfiguracji:\n%s", tekstWyniku(t, wynik))
 	}
 }
+
+func TestUwagiSaWidoczneWPodgladzie(t *testing.T) {
+	// Uwagi są drukowane na dokumencie, więc użytkownik musi je zobaczyć razem
+	// z kwotami — inaczej literówki w treści wyjdą dopiero na wydruku.
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		switch act {
+		case "addSellInvoice":
+			a.ostatnieCialo = form
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"id":"1","numer":"FV 1\/07\/2026","result_code":0}}`)
+		default:
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+		}
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	sesja := polaczonyKlient(t, s)
+	ctx := context.Background()
+
+	const uwagi = "zamawiający: Jan Kowalski"
+	przygotowanie, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta": "41", "data_wystawienia": "2026-07-25", "uwagi": uwagi,
+			"pozycje": []map[string]any{{"opis": "U", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"}},
+		},
+	})
+	if err != nil || przygotowanie.IsError {
+		t.Fatalf("przygotuj_fakture = %v / %s", err, tekstWyniku(t, przygotowanie))
+	}
+
+	wy := strukturaWyniku[WyjsciePrzygotuj](t, przygotowanie)
+	if wy.Uwagi != uwagi {
+		t.Errorf("Uwagi = %q, chcę %q", wy.Uwagi, uwagi)
+	}
+	if !strings.Contains(tekstWyniku(t, przygotowanie), uwagi) {
+		t.Errorf("uwagi nie trafiły do podglądu tekstowego:\n%s", tekstWyniku(t, przygotowanie))
+	}
+
+	// I muszą dotrzeć do API bez zmian.
+	wynik, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "zatwierdz_fakture",
+		Arguments: map[string]any{"szkic_id": wy.SzkicID},
+	})
+	if err != nil || wynik.IsError {
+		t.Fatalf("zatwierdz_fakture = %v / %s", err, tekstWyniku(t, wynik))
+	}
+	if got := a.ostatnieCialo.Get("uwagi"); got != uwagi {
+		t.Errorf("uwagi wysłane do API = %q, chcę %q", got, uwagi)
+	}
+}
+
+func TestBrakUwagNiePokazujePustegoWiersza(t *testing.T) {
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	sesja := polaczonyKlient(t, s)
+
+	wynik, err := sesja.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta": "41", "data_wystawienia": "2026-07-25",
+			"pozycje": []map[string]any{{"opis": "U", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"}},
+		},
+	})
+	if err != nil || wynik.IsError {
+		t.Fatalf("przygotuj_fakture = %v / %s", err, tekstWyniku(t, wynik))
+	}
+	if strings.Contains(tekstWyniku(t, wynik), "Uwagi:") {
+		t.Errorf("podgląd pokazuje pusty wiersz uwag:\n%s", tekstWyniku(t, wynik))
+	}
+}

@@ -95,8 +95,11 @@ func (e *SystimError) podpowiedz() string {
 		return "Nieprawidłowy login lub hasło (kod 4). Sprawdź SYSTIM_LOGIN i SYSTIM_PASS — " +
 			"hasło do API generuje się osobno w panelu, nie jest to hasło do logowania w przeglądarce."
 	case KodBlednePola:
-		return "Nie wypełniono poprawnie wymaganych pól (kod 6). Ten kod pojawia się także " +
-			"wtedy, gdy wskazane ID nie istnieje — sprawdź id_kontrahenta, id_szablonu i id_numeracji."
+		return "Nie wypełniono poprawnie wymaganych pól (kod 6). Systim używa tego kodu także " +
+			"w dwóch innych sytuacjach: gdy wskazane ID nie istnieje (sprawdź id_kontrahenta, " +
+			"id_szablonu, id_numeracji) oraz gdy operacja wymaga wyższej wersji programu — " +
+			"np. paragony fiskalne są dostępne dopiero w wersji Pro. Właściwy powód podaje " +
+			"komunikat powyżej."
 	case KodBrakDanych:
 		return "Brak danych — zapytanie nie zwróciło żadnego rekordu (kod 8)."
 	case KodBrakFunkcji:
