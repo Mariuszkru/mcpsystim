@@ -481,3 +481,63 @@ func TestNumeracjeDomyslneObejmujaWszystkieObslugiwaneRodzaje(t *testing.T) {
 		}
 	}
 }
+
+func TestSzablonDobieranyDoRodzajuDokumentu(t *testing.T) {
+	// Szablon, tak samo jak numeracja, jest w Systim przypisany do typu dokumentu.
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_ID_SZABLONU", `{"0":43,"1":1}`)
+
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	for _, p := range []struct {
+		rodzaj int
+		chce   string
+	}{
+		{0, "43"},  // faktura VAT
+		{1, "1"},   // pro forma
+		{22, "22"}, // rachunek — z wartości domyślnych
+		{26, "26"}, // oferta — j.w.
+	} {
+		got, err := c.Szablon(p.rodzaj)
+		if err != nil {
+			t.Errorf("Szablon(%d) = %v", p.rodzaj, err)
+			continue
+		}
+		if got != p.chce {
+			t.Errorf("Szablon(%d) = %q, chcę %q", p.rodzaj, got, p.chce)
+		}
+	}
+}
+
+func TestSzablonBrakWpisuDajeCzytelnyBlad(t *testing.T) {
+	ustawMinimalne(t)
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	_, err = c.Szablon(999)
+	if err == nil {
+		t.Fatal("Szablon(999) = nil, chcę błędu")
+	}
+	for _, fragment := range []string{"999", "SYSTIM_ID_SZABLONU", "Szablony wydruku"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Errorf("err = %v, chcę wzmianki o %q", err, fragment)
+		}
+	}
+}
+
+func TestSzablonyINumeracjePokrywajaTeSameRodzaje(t *testing.T) {
+	// Rozjazd list oznaczałby, że któryś rodzaj da się przygotować, ale nie wystawić.
+	for rodzaj := range NumeracjeDomyslne {
+		if _, ok := SzablonyDomyslne[rodzaj]; !ok {
+			t.Errorf("rodzaj %d ma domyślną numerację, ale nie ma domyślnego szablonu", rodzaj)
+		}
+	}
+	for rodzaj := range SzablonyDomyslne {
+		if _, ok := NumeracjeDomyslne[rodzaj]; !ok {
+			t.Errorf("rodzaj %d ma domyślny szablon, ale nie ma domyślnej numeracji", rodzaj)
+		}
+	}
+}

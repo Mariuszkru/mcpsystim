@@ -66,8 +66,9 @@ openssl rand -base64 48
 **Nie ma metody API, która by je wylistowała.** Brak któregokolwiek z tych dwóch
 pól powoduje odrzucenie dokumentu przez API.
 
-- **ID szablonu**: Panel Systim → Ustawienia → Szablony wydruku → wejdź w edycję
-  wybranego szablonu i odczytaj parametr `id` z adresu URL.
+- **ID szablonu**: Panel Systim → Ustawienia → Szablony wydruku, kolumna `ID`.
+  **Każdy typ dokumentu ma własny szablon**, a konto może mieć dodatkowo warianty
+  obcojęzyczne (np. Pro Forma EN, Pro Forma DE).
 - **ID numeracji**: Panel Systim → Ustawienia → Numeracja dokumentów. Kolumna `ID`
   wskazuje serię, a **każdy typ dokumentu ma własną**.
 
@@ -82,10 +83,21 @@ Wpisz je do `SYSTIM_ID_SZABLONU` i `SYSTIM_ID_NUMERACJI`.
 > SYSTIM_ID_NUMERACJI={"0":1,"1":5}
 > ```
 >
-> Standardowe ID Systim (używane jako domyślne, gdy nie nadpiszesz):
-> `0` faktura VAT → **1**, `1` pro forma → **5**, `6` paragon fiskalny → **39**,
-> `15` paragon → **9**, `22` rachunek → **16**, `26` oferta → **21**.
-> Pojedyncza liczba nadal działa, ale obowiązuje dla wszystkich rodzajów naraz.
+> **To samo dotyczy szablonu wydruku** — `SYSTIM_ID_SZABLONU` też przyjmuje mapę.
+>
+> Standardowe ID Systim, używane jako domyślne, gdy nie nadpiszesz:
+>
+> | `rodzaj` | Dokument | Numeracja | Szablon |
+> |---|---|---|---|
+> | `0` | faktura VAT | 1 | 43 |
+> | `1` | pro forma | 5 | 1 |
+> | `6` | paragon fiskalny | 39 | 15 |
+> | `15` | paragon | 9 | 15 |
+> | `22` | rachunek | 16 | 22 |
+> | `26` | oferta | 21 | 26 |
+>
+> Pojedyncza liczba nadal działa w obu zmiennych, ale obowiązuje dla wszystkich
+> rodzajów naraz — czyli tylko wtedy, gdy wystawiasz jeden typ dokumentu.
 
 ### 3. Odczytaj ID stawek VAT narzędziem `lista_stawek_vat`
 
@@ -182,7 +194,7 @@ znajduje się w [`.env.example`](.env.example).
 | `SYSTIM_KONTO` | — | Poddomena konta (`abcd` dla `abcd.systim.pl`) |
 | `SYSTIM_LOGIN` | — | Użytkownik z wygenerowanym hasłem API |
 | `SYSTIM_PASS` | — | Hasło do API (inne niż hasło do panelu) |
-| `SYSTIM_ID_SZABLONU` | — | ID szablonu dokumentu |
+| `SYSTIM_ID_SZABLONU` | — | Mapa `rodzaj → ID szablonu`, np. `{"0":43,"1":1}` |
 | `SYSTIM_ID_NUMERACJI` | — | Mapa `rodzaj → ID numeracji`, np. `{"0":1,"1":5}` |
 | `SYSTIM_VAT_IDS` | — | JSON: mapa stawka → ID |
 | `SYSTIM_TRANSPORT` | `http` | `http` albo `stdio` |
@@ -481,9 +493,13 @@ pro formy:
 
 ```
 SYSTIM_ID_NUMERACJI={"0":1,"1":5}
+SYSTIM_ID_SZABLONU={"0":43,"1":1}
 ```
 
-ID odczytasz w panelu: Ustawienia → Numeracja dokumentów, kolumna `ID`.
+Sprawdź **oba** pola naraz — szablon podlega dokładnie tej samej regule i po
+naprawieniu samej numeracji dokument potrafi zostać odrzucony ponownie.
+ID odczytasz w panelu: Ustawienia → Numeracja dokumentów oraz Szablony wydruku,
+kolumna `ID`.
 Od wersji z mapowaniem brak wpisu dla danego rodzaju jest wykrywany już
 w `przygotuj_fakture`, a więc **przed** nieodwracalnym zatwierdzeniem.
 

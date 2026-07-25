@@ -43,10 +43,13 @@ const (
 // Config to komplet ustawień serwera.
 type Config struct {
 	// Dostęp do Systim.
-	Konto      string
-	Login      string
-	Pass       string
-	IDSzablonu string
+	Konto string
+	Login string
+	Pass  string
+	// IDSzablonu mapuje rodzaj dokumentu na ID szablonu wydruku.
+	//
+	// Szablon jest w Systim przypisany do typu dokumentu — tak samo jak numeracja.
+	IDSzablonu map[int]string
 	// IDNumeracji mapuje rodzaj dokumentu na ID serii numeracji w Systim.
 	//
 	// W Systim seria numeracji jest przypisana do konkretnego typu dokumentu.
@@ -119,8 +122,10 @@ func Wczytaj() (*Config, error) {
 	c.Konto = wymagane(&z, "SYSTIM_KONTO", "poddomena konta w Systim, np. abcd dla abcd.systim.pl")
 	c.Login = wymagane(&z, "SYSTIM_LOGIN", "użytkownik z wygenerowanym hasłem API")
 	c.Pass = wymagane(&z, "SYSTIM_PASS", "hasło do API (generowane w panelu, inne niż hasło do logowania)")
-	c.IDSzablonu = wymagane(&z, "SYSTIM_ID_SZABLONU", "ID szablonu dokumentu; bez niego API odrzuca dokument")
-	c.IDNumeracji = wczytajNumeracje(&z)
+	c.IDSzablonu = wczytajMapeRodzajow(&z, "SYSTIM_ID_SZABLONU",
+		"ID szablonu wydruku; bez niego API odrzuca dokument", SzablonyDomyslne)
+	c.IDNumeracji = wczytajMapeRodzajow(&z, "SYSTIM_ID_NUMERACJI",
+		"ID serii numeracji; bez niej API odrzuca dokument", NumeracjeDomyslne)
 
 	if s := os.Getenv("SYSTIM_KONTO"); s != "" && strings.Contains(s, ".") {
 		z.dodaj("SYSTIM_KONTO = %q wygląda na pełny adres; podaj samą poddomenę (np. abcd, nie abcd.systim.pl)", s)
@@ -344,50 +349,64 @@ func wczytajKlucz(z *zbieraczBledow) []byte {
 }
 
 // NumeracjeDomyslne mapuje rodzaj dokumentu na ID serii numeracji ze standardowej
-// kartoteki numeracji Systim (panel → Ustawienia → Numeracja dokumentów).
+// kartoteki Systim (panel → Ustawienia → Numeracja dokumentów).
 //
-// Te ID są stałe w Systim — identyfikują typ dokumentu, a nie konkretną serię
-// klienta, więc te same wartości działają na różnych kontach. Symbol i wzór
-// numeracji można w panelu zmieniać, ale ID typu pozostaje.
-//
-// Wartości potwierdzone na eksporcie z zakładki „Numeracja dokumentów".
-// Jeśli u Ciebie są inne, nadpisz je zmienną SYSTIM_ID_NUMERACJI.
+// Te ID identyfikują typ dokumentu, a nie konkretną serię klienta — symbol i wzór
+// numeracji da się w panelu zmieniać, ale ID typu pozostaje. Wartości potwierdzone
+// na eksporcie z zakładki „Numeracja dokumentów".
 var NumeracjeDomyslne = map[int]int{
-	0:  1,  // faktura VAT            → Faktura VAT (FV)
-	1:  5,  // pro forma              → Faktura Pro Forma (PF)
-	6:  39, // paragon fiskalny       → Paragon fiskalny (PFA)
-	15: 9,  // paragon niefiskalny    → Paragon (PA)
-	22: 16, // rachunek               → Faktura zw. z VAT, d. Rachunek (FA)
-	26: 21, // oferta                 → Oferta (OF)
+	0:  1,  // faktura VAT          → Faktura VAT (FV)
+	1:  5,  // pro forma            → Faktura Pro Forma (PF)
+	6:  39, // paragon fiskalny     → Paragon fiskalny (PFA)
+	15: 9,  // paragon niefiskalny  → Paragon (PA)
+	22: 16, // rachunek             → Faktura zw. z VAT, d. Rachunek (FA)
+	26: 21, // oferta               → Oferta (OF)
 }
 
-// wczytajNumeracje odczytuje SYSTIM_ID_NUMERACJI.
+// SzablonyDomyslne mapuje rodzaj dokumentu na ID szablonu wydruku.
+//
+// Szablon, tak samo jak numeracja, jest w Systim przypisany do typu dokumentu:
+// szablon faktury VAT nie nadaje się do pro formy. Wskazane są warianty polskie —
+// konto może mieć równolegle wersje EN i DE tego samego dokumentu, wtedy nadpisz
+// je zmienną SYSTIM_ID_SZABLONU.
+//
+// Wartości potwierdzone na eksporcie z zakładki „Szablony wydruku".
+var SzablonyDomyslne = map[int]int{
+	0:  43, // faktura VAT          → Szablon faktury VAT
+	1:  1,  // pro forma            → Szablon faktur Pro Forma
+	6:  15, // paragon fiskalny     → Szablon paragonu
+	15: 15, // paragon niefiskalny  → Szablon paragonu
+	22: 22, // rachunek             → Szablon dokumentu Rachunek (RA)
+	26: 26, // oferta               → Szablon oferty
+}
+
+// wczytajMapeRodzajow odczytuje zmienną wiążącą rodzaj dokumentu z ID zasobu
+// w Systim (numeracji albo szablonu).
 //
 // Przyjmuje dwie postacie:
-//   - pojedyncza liczba, np. 1 — użyta dla wszystkich rodzajów dokumentów;
-//     zachowane dla zgodności wstecznej, ale działa tylko wtedy, gdy wystawiasz
+//   - pojedyncza liczba, np. 43 — użyta dla wszystkich rodzajów dokumentów;
+//     zachowane dla zgodności wstecznej, ale poprawne tylko wtedy, gdy wystawiasz
 //     jeden typ dokumentu;
-//   - mapa JSON rodzaj → ID, np. {"0":1,"1":5} — uzupełniana brakującymi
-//     rodzajami z NumeracjeDomyslne.
-func wczytajNumeracje(z *zbieraczBledow) map[int]string {
-	raw := strings.TrimSpace(os.Getenv("SYSTIM_ID_NUMERACJI"))
+//   - mapa JSON rodzaj → ID, np. {"0":43,"1":1} — brakujące rodzaje uzupełniane
+//     wartościami domyślnymi.
+func wczytajMapeRodzajow(z *zbieraczBledow, nazwa, opis string, domyslne map[int]int) map[int]string {
+	raw := strings.TrimSpace(os.Getenv(nazwa))
 	if raw == "" {
-		z.dodaj(`brak wymaganej zmiennej SYSTIM_ID_NUMERACJI (ID serii numeracji; bez niej ` +
-			`API odrzuca dokument). Zalecana postać to mapa rodzaj → ID, np. {"0":1,"1":5} ` +
-			`— w Systim numeracja jest przypisana do typu dokumentu. ` +
-			`ID odczytasz w panelu: Ustawienia → Numeracja dokumentów`)
+		z.dodaj("brak wymaganej zmiennej %s (%s). Zalecana postać to mapa rodzaj → ID, "+
+			"np. %s — w Systim ten zasób jest przypisany do typu dokumentu",
+			nazwa, opis, przykladMapy(domyslne))
 		return nil
 	}
 
-	out := make(map[int]string, len(NumeracjeDomyslne))
+	out := make(map[int]string, len(domyslne))
 
 	// Postać skrócona: jedna liczba dla wszystkich rodzajów.
 	if id, err := strconv.Atoi(raw); err == nil {
 		if id <= 0 {
-			z.dodaj("SYSTIM_ID_NUMERACJI = %d musi być liczbą dodatnią", id)
+			z.dodaj("%s = %d musi być liczbą dodatnią", nazwa, id)
 			return nil
 		}
-		for rodzaj := range NumeracjeDomyslne {
+		for rodzaj := range domyslne {
 			out[rodzaj] = strconv.Itoa(id)
 		}
 		return out
@@ -395,30 +414,44 @@ func wczytajNumeracje(z *zbieraczBledow) map[int]string {
 
 	var luzne map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &luzne); err != nil {
-		z.dodaj(`SYSTIM_ID_NUMERACJI = %q nie jest ani liczbą, ani poprawnym JSON-em. `+
-			`Oczekuję np. 1 albo {"0":1,"1":5}: %v`, raw, err)
+		z.dodaj("%s = %q nie jest ani liczbą, ani poprawnym JSON-em. Oczekuję np. %s: %v",
+			nazwa, raw, przykladMapy(domyslne), err)
 		return nil
 	}
 
 	// Najpierw wartości domyślne, potem nadpisania z konfiguracji.
-	for rodzaj, id := range NumeracjeDomyslne {
+	for rodzaj, id := range domyslne {
 		out[rodzaj] = strconv.Itoa(id)
 	}
 	for k, v := range luzne {
 		rodzaj, err := strconv.Atoi(strings.TrimSpace(k))
 		if err != nil {
-			z.dodaj("SYSTIM_ID_NUMERACJI: klucz %q nie jest numerem rodzaju dokumentu", k)
+			z.dodaj("%s: klucz %q nie jest numerem rodzaju dokumentu", nazwa, k)
 			continue
 		}
 		s := strings.Trim(strings.TrimSpace(string(v)), `"`)
 		id, err := strconv.Atoi(s)
 		if err != nil || id <= 0 {
-			z.dodaj("SYSTIM_ID_NUMERACJI: rodzaj %d ma wartość %q, która nie jest dodatnią liczbą całkowitą", rodzaj, s)
+			z.dodaj("%s: rodzaj %d ma wartość %q, która nie jest dodatnią liczbą całkowitą", nazwa, rodzaj, s)
 			continue
 		}
 		out[rodzaj] = strconv.Itoa(id)
 	}
 	return out
+}
+
+// przykladMapy buduje czytelny przykład na podstawie wartości domyślnych.
+func przykladMapy(domyslne map[int]int) string {
+	rodzaje := make([]int, 0, len(domyslne))
+	for r := range domyslne {
+		rodzaje = append(rodzaje, r)
+	}
+	sort.Ints(rodzaje)
+	czesci := make([]string, 0, 2)
+	for _, r := range rodzaje[:min(2, len(rodzaje))] {
+		czesci = append(czesci, fmt.Sprintf("%q:%d", strconv.Itoa(r), domyslne[r]))
+	}
+	return "{" + strings.Join(czesci, ",") + "}"
 }
 
 // DomyslneScopesZadane to scope'y doklejane do OIDC_SCOPE przy ogłaszaniu ich
@@ -486,6 +519,21 @@ func (c *Config) Numeracja(rodzaj int) (string, error) {
 			"do typu dokumentu, więc każdy wystawiany rodzaj musi mieć własny wpis. "+
 			"Uzupełnij SYSTIM_ID_NUMERACJI, np. {\"0\":1,\"1\":5}; ID odczytasz w panelu: "+
 			"Ustawienia → Numeracja dokumentów", rodzaj)
+}
+
+// Szablon zwraca ID szablonu wydruku właściwego dla danego rodzaju dokumentu.
+//
+// Szablon faktury VAT nie nadaje się do pro formy — Systim wiąże go z typem
+// dokumentu dokładnie tak samo jak numerację.
+func (c *Config) Szablon(rodzaj int) (string, error) {
+	if id, ok := c.IDSzablonu[rodzaj]; ok && id != "" {
+		return id, nil
+	}
+	return "", fmt.Errorf(
+		"brak ID szablonu dla rodzaju dokumentu %d. W Systim szablon wydruku jest "+
+			"przypisany do typu dokumentu, więc każdy wystawiany rodzaj musi mieć własny "+
+			"wpis. Uzupełnij SYSTIM_ID_SZABLONU, np. {\"0\":43,\"1\":1}; ID odczytasz "+
+			"w panelu: Ustawienia → Szablony wydruku", rodzaj)
 }
 
 // URLSystim zwraca adres endpointu API dla skonfigurowanego konta.

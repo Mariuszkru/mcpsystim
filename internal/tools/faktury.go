@@ -130,6 +130,9 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 	if _, err := s.cfg.Numeracja(we.Rodzaj); err != nil {
 		return nil, WyjsciePrzygotuj{}, err
 	}
+	if _, err := s.cfg.Szablon(we.Rodzaj); err != nil {
+		return nil, WyjsciePrzygotuj{}, err
+	}
 
 	wejsciowe := make([]invoicing.PozycjaWejsciowa, 0, len(we.Pozycje))
 	for _, p := range we.Pozycje {
@@ -359,13 +362,17 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 	if err != nil {
 		return nil, WyjscieZatwierdz{}, err
 	}
+	idSzablonu, err := s.cfg.Szablon(dok.Rodzaj)
+	if err != nil {
+		return nil, WyjscieZatwierdz{}, err
+	}
 
 	zadanie := systim.ZadanieFaktury{
 		IDKontrahenta:   dok.IDKontrahenta,
 		DataWystawienia: dok.DataWystawienia,
 		DataSprzedazy:   dok.DataSprzedazy,
 		Rodzaj:          dok.Rodzaj,
-		IDSzablonu:      s.cfg.IDSzablonu,
+		IDSzablonu:      idSzablonu,
 		IDNumeracji:     idNumeracji,
 		Pozycje:         invoicing.NaPozycjeSystim(dok.Pozycje),
 		TerminPlatnosci: dok.TerminPlatnosci,
