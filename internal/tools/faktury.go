@@ -39,7 +39,7 @@ type WejsciePrzygotuj struct {
 	Rodzaj        int    `json:"rodzaj,omitempty" jsonschema:"Rodzaj dokumentu: 0 faktura VAT (domyślnie), 1 pro forma, 22 rachunek, 6 paragon fiskalny, 15 paragon niefiskalny, 26 oferta. Faktury w walucie obcej nie są obsługiwane"`
 
 	TerminPlatnosci int    `json:"termin_platnosci,omitempty" jsonschema:"Termin płatności liczony w DNIACH od daty wystawienia, np. 14. Nie podawaj daty"`
-	FormaPlatnosci  string `json:"forma_platnosci,omitempty" jsonschema:"Forma płatności — jedna z: przelew, gotówka, barter, za pobraniem, rozliczenie saldami, karta płatnicza"`
+	FormaPlatnosci  string `json:"forma_platnosci,omitempty" jsonschema:"Forma płatności — jedna z: przelew, gotówka, barter, za pobraniem, rozliczenie saldami, karta płatnicza. Gdy pominiesz to pole, użyta zostanie domyślna forma z konfiguracji serwera, a jeśli i tej nie ma — wartość domyślna Systim, czyli gotówka"`
 	Uwagi           string `json:"uwagi,omitempty" jsonschema:"Dodatkowe uwagi drukowane na dokumencie"`
 	Rabat           string `json:"rabat,omitempty" jsonschema:"Rabat na całym dokumencie jako procent bez znaku procenta, np. 5 albo 12.5. Obniża cenę jednostkową każdej pozycji"`
 	WyslijDoKSeF    bool   `json:"wyslij_do_ksef,omitempty" jsonschema:"Czy po wystawieniu wysłać dokument do KSeF"`
@@ -117,10 +117,16 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 			"dokument ma %d pozycji, a limit to %d. Podziel go na kilka dokumentów",
 			len(we.Pozycje), s.cfg.MaxPozycji)
 	}
-	if we.FormaPlatnosci != "" && !dozwolonaFormaPlatnosci(we.FormaPlatnosci) {
+	// Pominięcie pola oznaczałoby wartość domyślną Systim (gotówka), co przy
+	// firmach rozliczających się przelewem jest cichą pomyłką na dokumencie.
+	formaPlatnosci := strings.TrimSpace(we.FormaPlatnosci)
+	if formaPlatnosci == "" {
+		formaPlatnosci = s.cfg.DomyslnaFormaPlatnosci
+	}
+	if formaPlatnosci != "" && !dozwolonaFormaPlatnosci(formaPlatnosci) {
 		return nil, WyjsciePrzygotuj{}, fmt.Errorf(
 			"forma płatności %q nie jest obsługiwana; dozwolone: %s",
-			we.FormaPlatnosci, strings.Join(systim.FormyPlatnosci, ", "))
+			formaPlatnosci, strings.Join(systim.FormyPlatnosci, ", "))
 	}
 	if we.TerminPlatnosci < 0 {
 		return nil, WyjsciePrzygotuj{}, errors.New("termin_platnosci to liczba dni i nie może być ujemny")
@@ -165,7 +171,7 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		Pozycje:          obliczone,
 		Podsumowanie:     sumy,
 		TerminPlatnosci:  we.TerminPlatnosci,
-		FormaPlatnosci:   we.FormaPlatnosci,
+		FormaPlatnosci:   formaPlatnosci,
 		Uwagi:            we.Uwagi,
 		Rabat:            we.Rabat,
 		WyslijDoKSeF:     we.WyslijDoKSeF,
@@ -184,7 +190,7 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		NazwaKontrahenta: nazwaKontrahenta,
 		DataWystawienia:  dataWystawienia,
 		DataSprzedazy:    dataSprzedazy,
-		FormaPlatnosci:   we.FormaPlatnosci,
+		FormaPlatnosci:   formaPlatnosci,
 		RazemNetto:       sumy.Netto.StringFixed(2),
 		RazemVAT:         sumy.VAT.StringFixed(2),
 		RazemBrutto:      sumy.Brutto.StringFixed(2),
@@ -225,7 +231,9 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 	if we.Rabat != "" {
 		wy.Ostrzezenia = append(wy.Ostrzezenia, fmt.Sprintf(
 			"Zastosowano rabat %s%%. Ceny jednostkowe w podglądzie są już po rabacie, "+
-				"bo API Systim nie przelicza kwot samo.", we.Rabat))
+				"bo API Systim nie przelicza kwot samo. Samo pole „rabat” nie jest wysyłane "+
+				"do Systim (wywraca backend przy 3+ pozycjach), więc na wydruku nie pojawi "+
+				"się osobna adnotacja o rabacie — będą tylko obniżone ceny.", we.Rabat))
 	}
 	if we.WyslijDoKSeF {
 		wy.Ostrzezenia = append(wy.Ostrzezenia,
@@ -396,10 +404,18 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		return nil, WyjscieZatwierdz{}, bladDlaModelu("wystawienie dokumentu", err)
 	}
 
+	// Systim nie zawsze zwraca numer w odpowiedzi addSellInvoice — potwierdzone
+	// na pro formie, gdzie dokument dostał numer, a pole wróciło puste. Numer jest
+	// jednak nadany, a użytkownik musi go poznać, więc doczytujemy go po ID.
+	numer := wynik.Numer
+	if numer == "" && wynik.ID != "" {
+		numer = s.doczytajNumer(ctx, wynik.ID)
+	}
+
 	opisKsiegowania, wymagaUwagi := systim.OpisResultCode(wynik.ResultCode)
 	wy := WyjscieZatwierdz{
 		IDFaktury:      wynik.ID,
-		Numer:          wynik.Numer,
+		Numer:          numer,
 		RazemBrutto:    dok.Podsumowanie.Brutto.StringFixed(2),
 		Ksiegowanie:    opisKsiegowania,
 		WymagaUwagi:    wymagaUwagi,
@@ -408,11 +424,11 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 	}
 
 	s.log.InfoContext(ctx, "dokument wystawiony",
-		"id", wynik.ID, "numer", wynik.Numer, "result_code", wynik.ResultCode)
+		"id", wynik.ID, "numer", numer, "result_code", wynik.ResultCode)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Dokument został wystawiony w Systim.\n\n")
-	fmt.Fprintf(&b, "Numer:       %s\n", wynik.Numer)
+	fmt.Fprintf(&b, "Numer:       %s\n", opisNumeru(numer))
 	fmt.Fprintf(&b, "ID:          %s\n", wynik.ID)
 	fmt.Fprintf(&b, "Do zapłaty:  %s zł\n", wy.RazemBrutto)
 	if dok.NazwaKontrahenta != "" {
@@ -430,6 +446,34 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 	return tekst(b.String()), wy, nil
 }
 
+// doczytajNumer odczytuje numer wystawionego dokumentu po jego ID.
+//
+// Wywoływane tylko wtedy, gdy addSellInvoice nie zwróciło numeru. Błąd odczytu
+// nie może przewrócić operacji — dokument już istnieje, więc gorszym wynikiem
+// jest brak numeru w odpowiedzi niż zgłoszenie porażki wystawienia.
+func (s *Serwer) doczytajNumer(ctx context.Context, id string) string {
+	rekordy, err := s.klient.ListSellInvoices(ctx, systim.FiltrFaktur{IDs: []string{id}})
+	if err != nil {
+		s.log.WarnContext(ctx, "nie udało się doczytać numeru wystawionego dokumentu",
+			"id", id, "blad", err.Error())
+		return ""
+	}
+	for _, r := range rekordy {
+		if r.ID == id {
+			return r.Pole("numer", "numer_faktury", "nr")
+		}
+	}
+	return ""
+}
+
+// opisNumeru zwraca numer albo wyjaśnienie, gdy go nie poznaliśmy.
+func opisNumeru(numer string) string {
+	if numer != "" {
+		return numer
+	}
+	return "(Systim nie zwróciło numeru — sprawdź dokument w panelu po jego ID)"
+}
+
 // --- lista_faktur ---
 
 // WejscieListaFaktur to parametry narzędzia lista_faktur.
@@ -445,6 +489,8 @@ type Faktura struct {
 	DataWystawienia string `json:"data_wystawienia,omitempty" jsonschema:"Data wystawienia"`
 	Kontrahent      string `json:"kontrahent,omitempty" jsonschema:"Nazwa nabywcy"`
 	Brutto          string `json:"brutto,omitempty" jsonschema:"Kwota brutto dokumentu"`
+	FormaPlatnosci  string `json:"forma_platnosci,omitempty" jsonschema:"Forma płatności zapisana na dokumencie"`
+	TerminPlatnosci string `json:"termin_platnosci,omitempty" jsonschema:"Termin płatności zapisany na dokumencie"`
 }
 
 // WyjscieListaFaktur to odpowiedź narzędzia lista_faktur.
@@ -480,6 +526,8 @@ func (s *Serwer) listaFaktur(ctx context.Context, _ *mcp.CallToolRequest, we Wej
 			DataWystawienia: r.Pole("data_wystawienia", "data"),
 			Kontrahent:      r.Pole("kontrahent", "nazwa_kontrahenta", "nabywca", "nazwa"),
 			Brutto:          r.Pole("kwota_brutto", "brutto", "razem_brutto", "suma_brutto"),
+			FormaPlatnosci:  r.Pole("forma_platnosci", "platnosc", "sposob_platnosci"),
+			TerminPlatnosci: r.Pole("termin_platnosci", "termin", "data_platnosci"),
 		})
 	}
 
@@ -499,6 +547,12 @@ func (s *Serwer) listaFaktur(ctx context.Context, _ *mcp.CallToolRequest, we Wej
 		}
 		if f.Brutto != "" {
 			fmt.Fprintf(&b, ", brutto %s zł", f.Brutto)
+		}
+		if f.FormaPlatnosci != "" {
+			fmt.Fprintf(&b, ", %s", f.FormaPlatnosci)
+		}
+		if f.TerminPlatnosci != "" {
+			fmt.Fprintf(&b, ", termin %s", f.TerminPlatnosci)
 		}
 		b.WriteByte('\n')
 	}

@@ -990,3 +990,204 @@ func TestSzablonDobieranyDoRodzajuPrzyZatwierdzeniu(t *testing.T) {
 		t.Errorf("id_numeracji = %q, chcę 5 dla pro formy", got)
 	}
 }
+
+func TestNumerDoczytywanyGdyAPIGoNieZwroci(t *testing.T) {
+	// Zaobserwowane na produkcji: addSellInvoice zwróciło id, ale puste "numer",
+	// mimo że dokument numer dostał. Użytkownik musi go poznać.
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		switch act {
+		case "addSellInvoice":
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"id":"3","numer":"","result_code":0}}`)
+		case "listSellInvoices":
+			if form.Get("ids") != "3" {
+				t.Errorf("ids = %q, chcę 3 — numer doczytujemy po ID wystawionego dokumentu", form.Get("ids"))
+			}
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"3":{"numer":"PF 3\/07\/2026"}}}`)
+		default:
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+		}
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	sesja := polaczonyKlient(t, s)
+	ctx := context.Background()
+
+	przygotowanie, _ := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta": "41", "data_wystawienia": "2026-07-25", "rodzaj": 1,
+			"pozycje": []map[string]any{{"opis": "U", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"}},
+		},
+	})
+	szkic := strukturaWyniku[WyjsciePrzygotuj](t, przygotowanie)
+
+	wynik, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "zatwierdz_fakture",
+		Arguments: map[string]any{"szkic_id": szkic.SzkicID},
+	})
+	if err != nil || wynik.IsError {
+		t.Fatalf("zatwierdz_fakture = %v / %s", err, tekstWyniku(t, wynik))
+	}
+
+	wy := strukturaWyniku[WyjscieZatwierdz](t, wynik)
+	if wy.Numer != "PF 3/07/2026" {
+		t.Errorf("Numer = %q, chcę PF 3/07/2026 doczytane po ID", wy.Numer)
+	}
+	if !strings.Contains(tekstWyniku(t, wynik), "PF 3/07/2026") {
+		t.Errorf("numer nie trafił do odpowiedzi tekstowej:\n%s", tekstWyniku(t, wynik))
+	}
+}
+
+func TestBrakNumeruNiePrzewracaWystawienia(t *testing.T) {
+	// Dokument już istnieje — nieudane doczytanie numeru nie może zgłosić porażki.
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		switch act {
+		case "addSellInvoice":
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"id":"3","numer":"","result_code":0}}`)
+		case "listSellInvoices":
+			io.WriteString(w, `{"error":{"code":2,"message":"Dostep zabroniony"},"result":null}`)
+		default:
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+		}
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	sesja := polaczonyKlient(t, s)
+	ctx := context.Background()
+
+	przygotowanie, _ := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta": "41", "data_wystawienia": "2026-07-25", "rodzaj": 1,
+			"pozycje": []map[string]any{{"opis": "U", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"}},
+		},
+	})
+	szkic := strukturaWyniku[WyjsciePrzygotuj](t, przygotowanie)
+
+	wynik, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "zatwierdz_fakture",
+		Arguments: map[string]any{"szkic_id": szkic.SzkicID},
+	})
+	if err != nil {
+		t.Fatalf("CallTool = %v", err)
+	}
+	if wynik.IsError {
+		t.Fatalf("wystawienie zgłoszone jako błąd mimo utworzonego dokumentu: %s", tekstWyniku(t, wynik))
+	}
+	wy := strukturaWyniku[WyjscieZatwierdz](t, wynik)
+	if wy.IDFaktury != "3" {
+		t.Errorf("IDFaktury = %q, chcę 3", wy.IDFaktury)
+	}
+	if !strings.Contains(tekstWyniku(t, wynik), "sprawdź dokument w panelu") {
+		t.Errorf("odpowiedź nie tłumaczy braku numeru:\n%s", tekstWyniku(t, wynik))
+	}
+}
+
+func TestDomyslnaFormaPlatnosciTrafiaNaDokument(t *testing.T) {
+	// Regresja z żywego konta: dokumenty wystawione bez podanej formy płatności
+	// wychodziły z gotówką, mimo że firma rozlicza się przelewem.
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		switch act {
+		case "addSellInvoice":
+			a.ostatnieCialo = form
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"id":"1","numer":"FV 1\/07\/2026","result_code":100}}`)
+		default:
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+		}
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	s.cfg.DomyslnaFormaPlatnosci = "przelew"
+	sesja := polaczonyKlient(t, s)
+	ctx := context.Background()
+
+	// Pole celowo pominięte — ma zadziałać wartość z konfiguracji.
+	przygotowanie, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta": "41", "data_wystawienia": "2026-07-25",
+			"pozycje": []map[string]any{{"opis": "U", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"}},
+		},
+	})
+	if err != nil || przygotowanie.IsError {
+		t.Fatalf("przygotuj_fakture = %v / %s", err, tekstWyniku(t, przygotowanie))
+	}
+	szkic := strukturaWyniku[WyjsciePrzygotuj](t, przygotowanie)
+	if szkic.FormaPlatnosci != "przelew" {
+		t.Errorf("podgląd pokazuje formę %q, chcę przelew", szkic.FormaPlatnosci)
+	}
+
+	wynik, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "zatwierdz_fakture",
+		Arguments: map[string]any{"szkic_id": szkic.SzkicID},
+	})
+	if err != nil || wynik.IsError {
+		t.Fatalf("zatwierdz_fakture = %v / %s", err, tekstWyniku(t, wynik))
+	}
+	if got := a.ostatnieCialo.Get("forma_platnosci"); got != "przelew" {
+		t.Errorf("forma_platnosci = %q, chcę przelew", got)
+	}
+}
+
+func TestJawnaFormaPlatnosciNadpisujeDomyslna(t *testing.T) {
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		switch act {
+		case "addSellInvoice":
+			a.ostatnieCialo = form
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"id":"1","numer":"FV 1\/07\/2026","result_code":100}}`)
+		default:
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+		}
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	s.cfg.DomyslnaFormaPlatnosci = "przelew"
+	sesja := polaczonyKlient(t, s)
+	ctx := context.Background()
+
+	przygotowanie, _ := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta": "41", "data_wystawienia": "2026-07-25", "forma_platnosci": "gotówka",
+			"pozycje": []map[string]any{{"opis": "U", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"}},
+		},
+	})
+	szkic := strukturaWyniku[WyjsciePrzygotuj](t, przygotowanie)
+
+	wynik, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "zatwierdz_fakture",
+		Arguments: map[string]any{"szkic_id": szkic.SzkicID},
+	})
+	if err != nil || wynik.IsError {
+		t.Fatalf("zatwierdz_fakture = %v / %s", err, tekstWyniku(t, wynik))
+	}
+	if got := a.ostatnieCialo.Get("forma_platnosci"); got != "gotówka" {
+		t.Errorf("forma_platnosci = %q, chcę gotówka — jawna wartość ma wygrywać", got)
+	}
+}
+
+func TestListaFakturPokazujeFormePlatnosci(t *testing.T) {
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"8":{"numer":"FV 5\/07\/2026","kwota_brutto":"123.00","forma_platnosci":"przelew","termin_platnosci":"2026-08-01"}}}`)
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	sesja := polaczonyKlient(t, s)
+
+	wynik, err := sesja.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "lista_faktur",
+		Arguments: map[string]any{"data_od": "2026-07-01", "data_do": "2026-07-31"},
+	})
+	if err != nil || wynik.IsError {
+		t.Fatalf("lista_faktur = %v / %s", err, tekstWyniku(t, wynik))
+	}
+	wy := strukturaWyniku[WyjscieListaFaktur](t, wynik)
+	if len(wy.Faktury) != 1 {
+		t.Fatalf("faktur = %d, chcę 1", len(wy.Faktury))
+	}
+	// Bez tego pola forma płatności była sprawdzalna wyłącznie w panelu.
+	if wy.Faktury[0].FormaPlatnosci != "przelew" {
+		t.Errorf("FormaPlatnosci = %q, chcę przelew", wy.Faktury[0].FormaPlatnosci)
+	}
+	if wy.Faktury[0].TerminPlatnosci != "2026-08-01" {
+		t.Errorf("TerminPlatnosci = %q", wy.Faktury[0].TerminPlatnosci)
+	}
+	if !strings.Contains(tekstWyniku(t, wynik), "przelew") {
+		t.Errorf("forma płatności nie trafiła do odpowiedzi tekstowej:\n%s", tekstWyniku(t, wynik))
+	}
+}

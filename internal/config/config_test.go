@@ -541,3 +541,43 @@ func TestSzablonyINumeracjePokrywajaTeSameRodzaje(t *testing.T) {
 		}
 	}
 }
+
+func TestDomyslnaFormaPlatnosci(t *testing.T) {
+	// Bez tego ustawienia pominięcie formy płatności daje wartość domyślną Systim
+	// (gotówkę), co przy firmie rozliczającej się przelewem jest cichą pomyłką.
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_DOMYSLNA_FORMA_PLATNOSCI", "przelew")
+
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	if c.DomyslnaFormaPlatnosci != "przelew" {
+		t.Errorf("DomyslnaFormaPlatnosci = %q, chcę przelew", c.DomyslnaFormaPlatnosci)
+	}
+}
+
+func TestDomyslnaFormaPlatnosciOpcjonalnaIWalidowana(t *testing.T) {
+	ustawMinimalne(t)
+	if c, err := Wczytaj(); err != nil || c.DomyslnaFormaPlatnosci != "" {
+		t.Errorf("brak zmiennej ma dawać pustą wartość, dostałem %q / %v", c.DomyslnaFormaPlatnosci, err)
+	}
+
+	// Wielkość liter nie ma znaczenia.
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_DOMYSLNA_FORMA_PLATNOSCI", "PRZELEW")
+	if c, err := Wczytaj(); err != nil || c.DomyslnaFormaPlatnosci != "przelew" {
+		t.Errorf("PRZELEW → %q / %v, chcę przelew", c.DomyslnaFormaPlatnosci, err)
+	}
+
+	// Nieznana wartość jest błędem konfiguracji, a nie cichym pominięciem.
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_DOMYSLNA_FORMA_PLATNOSCI", "blik")
+	_, err := Wczytaj()
+	if err == nil {
+		t.Fatal("Wczytaj = nil, chcę błędu dla nieobsługiwanej formy płatności")
+	}
+	if !strings.Contains(err.Error(), "przelew") {
+		t.Errorf("err = %v, chcę listy dozwolonych form", err)
+	}
+}

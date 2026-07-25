@@ -59,6 +59,9 @@ type Config struct {
 	IDNumeracji map[int]string
 	VatIDs      map[string]int
 	Timeout     time.Duration
+	// DomyslnaFormaPlatnosci jest używana, gdy narzędzie nie poda formy płatności.
+	// Puste oznacza „nie wysyłaj pola" — wtedy zadziała wartość domyślna Systim.
+	DomyslnaFormaPlatnosci string
 
 	// Serwer.
 	Transport  Transport
@@ -131,6 +134,7 @@ func Wczytaj() (*Config, error) {
 		z.dodaj("SYSTIM_KONTO = %q wygląda na pełny adres; podaj samą poddomenę (np. abcd, nie abcd.systim.pl)", s)
 	}
 
+	c.DomyslnaFormaPlatnosci = wczytajFormePlatnosci(&z)
 	c.VatIDs = wczytajVatIDs(&z)
 	c.Timeout = wczytajCzas(&z, "SYSTIM_TIMEOUT", DomyslnyTimeout)
 
@@ -452,6 +456,31 @@ func przykladMapy(domyslne map[int]int) string {
 		czesci = append(czesci, fmt.Sprintf("%q:%d", strconv.Itoa(r), domyslne[r]))
 	}
 	return "{" + strings.Join(czesci, ",") + "}"
+}
+
+// FormyPlatnosci to wartości akceptowane przez pole forma_platnosci w API Systim.
+var FormyPlatnosci = []string{
+	"przelew", "gotówka", "barter", "za pobraniem", "rozliczenie saldami", "karta płatnicza",
+}
+
+// wczytajFormePlatnosci odczytuje domyślną formę płatności.
+//
+// Pole jest opcjonalne, ale warto je ustawić: pominięcie formy płatności przy
+// wystawianiu dokumentu oznacza wartość domyślną Systim, czyli gotówkę, co przy
+// firmie rozliczającej się przelewem daje cicho błędny dokument.
+func wczytajFormePlatnosci(z *zbieraczBledow) string {
+	v := strings.TrimSpace(os.Getenv("SYSTIM_DOMYSLNA_FORMA_PLATNOSCI"))
+	if v == "" {
+		return ""
+	}
+	for _, d := range FormyPlatnosci {
+		if strings.EqualFold(v, d) {
+			return d
+		}
+	}
+	z.dodaj("SYSTIM_DOMYSLNA_FORMA_PLATNOSCI = %q nie jest obsługiwaną formą płatności; dozwolone: %s",
+		v, strings.Join(FormyPlatnosci, ", "))
+	return ""
 }
 
 // DomyslneScopesZadane to scope'y doklejane do OIDC_SCOPE przy ogłaszaniu ich

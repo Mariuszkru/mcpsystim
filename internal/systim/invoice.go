@@ -115,10 +115,12 @@ type ZadanieFaktury struct {
 	TerminPlatnosci int // w dniach; 0 = nie wysyłamy pola
 	FormaPlatnosci  string
 	Uwagi           string
-	Rabat           string // procent bez znaku %
-	WyslijEmail     bool
-	EmailAdres      string
-	WyslijDoKSeF    bool
+	// Rabat to procent bez znaku %. UWAGA: NIE jest wysyłany do API — patrz
+	// komentarz przy BudujParametryFaktury. Kwoty są już po rabacie.
+	Rabat        string
+	WyslijEmail  bool
+	EmailAdres   string
+	WyslijDoKSeF bool
 }
 
 // Kody zwracane w result_code metody addSellInvoice.
@@ -190,6 +192,17 @@ func (c *Client) AddSellInvoice(ctx context.Context, z ZadanieFaktury) (WynikFak
 
 // BudujParametryFaktury składa ciało form-urlencoded dla addSellInvoice.
 //
+// Pole "rabat" celowo NIE jest wysyłane, mimo że API je przyjmuje. Powód jest
+// empiryczny: przy dokumencie z rabatem i trzema lub więcej pozycjami backend
+// Systim przewraca się błędem PHP „Cannot assign an empty string to a string
+// offset" i nie wystawia dokumentu. Z dwiema pozycjami przechodzi, z trzema —
+// powtarzalnie nie. Potwierdzone na żywym koncie.
+//
+// Nic na tym nie tracimy: API i tak nie liczy kwot, więc rabat jest już
+// uwzględniony w cenach jednostkowych i kwotach wyliczonych przez pakiet
+// invoicing. Przesłanie tego pola miało wyłącznie znaczenie informacyjne na
+// wydruku, a przy okazji groziło pokazaniem rabatu dwukrotnie.
+//
 // Pozycje idą jako równoległe tablice w konwencji PHP: opis[0], ilosc[0], ...,
 // opis[1], ... Klucze ustawiamy dosłownie z nawiasami; url.Values zakoduje je
 // procentowo, a PHP rozkoduje z powrotem do tablic.
@@ -233,9 +246,6 @@ func BudujParametryFaktury(z ZadanieFaktury) (url.Values, error) {
 	}
 	if z.Uwagi != "" {
 		v.Set("uwagi", z.Uwagi)
-	}
-	if z.Rabat != "" {
-		v.Set("rabat", z.Rabat)
 	}
 	if z.WyslijEmail {
 		if strings.TrimSpace(z.EmailAdres) == "" {

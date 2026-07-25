@@ -132,7 +132,6 @@ func TestBudujParametryFakturyPolaOpcjonalne(t *testing.T) {
 		"termin_platnosci": "14",
 		"forma_platnosci":  "przelew",
 		"uwagi":            "Płatne na konto firmowe",
-		"rabat":            "5",
 		"email_wyslij":     "1",
 		"email_adres":      "ksiegowosc@example.com",
 		"wyslij_do_ksef":   "1",
@@ -149,7 +148,7 @@ func TestBudujParametryFakturyPolaOpcjonalnePomijaneGdyPuste(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BudujParametryFaktury = %v", err)
 	}
-	for _, k := range []string{"termin_platnosci", "forma_platnosci", "uwagi", "rabat", "email_wyslij", "wyslij_do_ksef"} {
+	for _, k := range []string{"termin_platnosci", "forma_platnosci", "uwagi", "email_wyslij", "wyslij_do_ksef"} {
 		if _, ok := v[k]; ok {
 			t.Errorf("pole %q zostało wysłane mimo braku wartości", k)
 		}
@@ -317,5 +316,29 @@ func TestGetSellInvoicePDF(t *testing.T) {
 	}
 	if plik.Base64 != "JVBERi0xLjQK" || plik.Nazwa != "FV_12_2026.pdf" {
 		t.Errorf("plik = %+v", plik)
+	}
+}
+
+func TestRabatNieJestWysylanyDoAPI(t *testing.T) {
+	// Regresja z żywego konta: dokument z rabatem i trzema pozycjami przewracał
+	// backend Systim błędem PHP „Cannot assign an empty string to a string offset".
+	// Rabat jest już uwzględniony w cenach jednostkowych, więc pola nie wysyłamy.
+	z := przykladoweZadanie()
+	z.Rabat = "10"
+	z.Pozycje = append(z.Pozycje, PozycjaFaktury{
+		Opis: "Trzecia", Ilosc: d("1"), CenaNetto: d("100"),
+		KwotaNetto: d("100"), StawkaVatID: "1", KwotaVat: d("23"), KwotaBrutto: d("123"),
+	})
+
+	v, err := BudujParametryFaktury(z)
+	if err != nil {
+		t.Fatalf("BudujParametryFaktury = %v", err)
+	}
+	if _, ok := v["rabat"]; ok {
+		t.Errorf("pole rabat zostało wysłane; przy 3+ pozycjach wywraca backend Systim")
+	}
+	// Kwoty pozycji muszą dotrzeć bez zmian — to w nich siedzi rabat.
+	if v.Get("kwota_netto[2]") != "100.00" {
+		t.Errorf("kwota_netto[2] = %q, chcę 100.00", v.Get("kwota_netto[2]"))
 	}
 }

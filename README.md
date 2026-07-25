@@ -202,6 +202,7 @@ znajduje się w [`.env.example`](.env.example).
 | `SYSTIM_KATALOG_PDF` | `/data/faktury` | Katalog na pobrane PDF-y |
 | `SYSTIM_TIMEOUT` | `30s` | Timeout wywołania API Systim |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
+| `SYSTIM_DOMYSLNA_FORMA_PLATNOSCI` | — | Forma płatności użyta, gdy narzędzie jej nie poda. **Bez tego Systim wstawia gotówkę** |
 | `SYSTIM_PUBLIC_URL` | — | Publiczny adres HTTPS serwera |
 | `SYSTIM_SZKIC_KLUCZ` | — | Klucz HMAC, min. 32 bajty |
 | `OIDC_ISSUER` | — | Issuer authentika, z ukośnikiem: `https://auth.recoop.pl/application/o/<slug>/` |
@@ -485,6 +486,22 @@ refresh_token]`. Zastosuj go ponownie albo uzupełnij pole ręcznie w authentiku
 Uwaga przy blueprintach: po zmianie pliku warto zrestartować kontener
 `authentik-worker` — to on je stosuje, a wykrycie zmiany bywa opóźnione.
 
+### Dokumenty wychodzą z gotówką, choć rozliczam się przelewem
+
+Pole `forma_platnosci` jest opcjonalne, a **pominięte oznacza wartość domyślną
+Systim, czyli gotówkę**. Model nie poda go, jeśli użytkownik o nim nie wspomni,
+więc pomyłka jest cicha — widać ją dopiero na wydruku.
+
+Ustaw domyślną formę raz, w konfiguracji:
+
+```
+SYSTIM_DOMYSLNA_FORMA_PLATNOSCI=przelew
+```
+
+Jawna wartość podana w `przygotuj_fakture` zawsze wygrywa z domyślną. Formę
+zapisaną na dokumencie sprawdzisz bez wchodzenia do panelu — pokazuje ją
+`lista_faktur`.
+
 ### „Błędne przypisanie rodzaju dokumentu do numeracji"
 
 Seria numeracji wskazana w `SYSTIM_ID_NUMERACJI` jest w Systim przypisana do innego
@@ -642,17 +659,23 @@ co w trybie stateless nie jest prawdą. Dlatego cały stan szkicu jest przenoszo
 wewnątrz podpisanego `szkic_id`, a TTL (30 minut) siedzi w payloadzie i jest
 sprawdzany przy weryfikacji. Nie ma czego sprzątać, bo nic nie leży w RAM.
 
-### Rabat jest stosowany po stronie serwera — **zweryfikuj to na pierwszej pro formie**
+### Rabat jest stosowany po stronie serwera, a pole `rabat` nie jest wysyłane
 
 API Systim nie liczy kwot, więc samo przesłanie pola `rabat` **nie obniżyłoby**
 kwot na dokumencie. Serwer stosuje rabat do ceny jednostkowej każdej pozycji
-i wysyła już obniżone kwoty, a pole `rabat` przekazuje dalej, żeby informacja
-o rabacie pojawiła się na wydruku.
+i wysyła już obniżone kwoty.
 
-> **Do sprawdzenia przy wdrożeniu:** jeśli Twój szablon wydruku sam odejmuje `rabat`
-> od przesłanych kwot, rabat pokaże się dwukrotnie. Sprawdź to na pierwszej pro
-> formie z rabatem. Jeśli tak się dzieje, usuń przekazywanie pola `rabat`
-> w `internal/systim/invoice.go` — kwoty pozostaną poprawne.
+Samego pola `rabat` **celowo nie przesyłamy**, mimo że API je przyjmuje. Powód
+jest empiryczny, potwierdzony na żywym koncie:
+
+> Dokument z rabatem i **trzema lub więcej pozycjami** przewraca backend Systim
+> błędem PHP `Uncaught Error: Cannot assign an empty string to a string offset`.
+> Odpowiedź nie jest wtedy JSON-em, dokument nie powstaje i nie zużywa numeru.
+> Z dwiema pozycjami to samo żądanie przechodzi bez problemu.
+
+Nic na tym nie tracimy — rabat jest już w cenach jednostkowych. Znika jedynie
+osobna adnotacja o rabacie na wydruku, a przy okazji odpada ryzyko pokazania
+rabatu dwukrotnie, gdyby szablon sam go odejmował.
 
 ### Waluty obce nie są zaimplementowane
 
