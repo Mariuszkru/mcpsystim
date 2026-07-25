@@ -454,14 +454,19 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 	if dok.NazwaKontrahenta != "" {
 		fmt.Fprintf(&b, "Nabywca:     %s\n", dok.NazwaKontrahenta)
 	}
-	fmt.Fprintf(&b, "\nKsięgowanie: %s\n", opisKsiegowania)
+	// O księgowaniu mówimy tylko wtedy, gdy coś poszło nie tak. Komunikat
+	// „księgowanie wyłączone" albo „utworzono zapis" pojawiałby się przy każdym
+	// dokumencie i niczego nie wnosi, natomiast result_code 102 oznacza dokument
+	// wystawiony bez zapisu w księgowości — to użytkownik musi zobaczyć.
+	if wymagaUwagi {
+		fmt.Fprintf(&b, "\nKsięgowanie: %s\n", opisKsiegowania)
+	}
 	if wynik.KsefData != "" {
 		fmt.Fprintf(&b, "KSeF:        %s\n", wynik.KsefData)
 	}
 	if we.WyslijEmail {
 		fmt.Fprintf(&b, "E-mail:      zlecono wysyłkę na %s\n", we.Email)
 	}
-	b.WriteString("\nPDF dokumentu pobierzesz narzędziem pobierz_pdf, podając id_faktury.")
 
 	return tekst(b.String()), wy, nil
 }
