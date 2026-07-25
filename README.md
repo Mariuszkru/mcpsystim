@@ -203,6 +203,7 @@ znajduje się w [`.env.example`](.env.example).
 | `SYSTIM_ADDR` | `:8000` | Adres nasłuchu |
 | `SYSTIM_KATALOG_PDF` | `/data/faktury` | Katalog na pobrane PDF-y |
 | `SYSTIM_TIMEOUT` | `30s` | Timeout wywołania API Systim |
+| `SYSTIM_CACHE_KARTOTEK` | `5m` | Czas życia cache kartotek kontrahentów i produktów; `0` wyłącza |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `SYSTIM_DOMYSLNA_FORMA_PLATNOSCI` | — | Forma płatności użyta, gdy narzędzie jej nie poda |
 | `SYSTIM_FORMY_PLATNOSCI` | standardowe ID | Mapa `nazwa → ID` formy płatności |
@@ -638,6 +639,10 @@ mockujących. Pokrywają między innymi:
   half-away-from-zero.
 - **Żądanie `addSellInvoice`:** asercja, że w ciele są klucze `opis[0]`, `ilosc[0]`
   itd. w konwencji PHP, a nie JSON.
+- **Cache kartotek:** kolejne odczyty idą z cache, po TTL kartoteka jest pobierana
+  ponownie, 16 równoległych odczytów daje **jedno** pobranie (pod `-race`), brak
+  trafienia wymusza dokładnie jedno odświeżenie, a `przygotuj_fakture` po
+  `szukaj_kontrahenta` nie pyta API drugi raz.
 - **Szkice:** poprawny przechodzi, ze zmienioną kwotą jest odrzucany,
   przeterminowany jest odrzucany, wygenerowany innym kluczem jest odrzucany.
 - **Uwierzytelnianie:** `/mcp` bez tokenu → `401` z `WWW-Authenticate`; token
@@ -723,6 +728,34 @@ mapy `nazwa → wartość`, a pola takie jak nazwa czy NIP są odczytywane z lis
 kandydatów. Nowe albo inaczej nazwane pole nadal dociera do użytkownika.
 
 ---
+
+### Kartoteki są cache'owane w pamięci procesu
+
+Metody listujące Systim nie przyjmują parametru wyszukiwania, więc każde
+wyszukanie kontrahenta czy produktu pobiera **całą kartotekę**. Bez cache jedna
+faktura ściągała ją dwa razy: raz w `szukaj_kontrahenta`, drugi raz
+w `przygotuj_fakture`, które odczytuje nazwę nabywcy do podglądu.
+
+Cache żyje w pamięci procesu (`SYSTIM_CACHE_KARTOTEK`, domyślnie 5 minut) i nie
+kłóci się z trybem `Stateless` — to pamięć podręczna odczytów, a nie stan sesji
+MCP. Przy wielu replikach każda grzeje się osobno, co jest bez znaczenia, bo
+chodzi wyłącznie o oszczędność wywołań.
+
+Nieświeżość jest ograniczona z dwóch stron: TTL oraz **wymuszone odświeżenie przy
+braku trafienia**. Kontrahent założony w panelu przed chwilą zostanie znaleziony
+przy pierwszym wyszukaniu, a nie dopiero po wygaśnięciu wpisu. Świeżo pobrana
+kartoteka bez szukanego rekordu nie powoduje kolejnego pobrania — wtedy rekordu
+po prostu nie ma.
+
+Faktury (`lista_faktur`) **nie są cache'owane**: to narzędzie służy do weryfikacji,
+czy dokument faktycznie powstał, więc musi widzieć stan bieżący.
+
+### Czas każdego wywołania API trafia do logów
+
+Przy `LOG_LEVEL=debug` każde wywołanie Systim loguje `czas_ms` i rozmiar
+odpowiedzi, a wywołanie powyżej 5 sekund jest zgłaszane ostrzeżeniem niezależnie
+od poziomu logów. To jedyny sposób, żeby odróżnić wolne API Systim od wolnego
+serwera, zanim zacznie się cokolwiek stroić.
 
 ## Struktura
 

@@ -96,12 +96,26 @@ func (s *Serwer) szukajKontrahenta(ctx context.Context, _ *mcp.CallToolRequest, 
 	}
 
 	// API Systim nie przyjmuje parametru wyszukiwania, więc filtrujemy po naszej stronie.
-	rekordy, err := s.klient.ListCompanies(ctx)
+	kartoteka, err := s.klient.Kontrahenci(ctx, false)
 	if err != nil {
 		return nil, WyjscieKontrahenci{}, bladDlaModelu("odczyt kartoteki kontrahentów", err)
 	}
 
-	dopasowane := filtruj(rekordy, fraza)
+	dopasowane := filtruj(kartoteka.Rekordy, fraza)
+	// Brak trafienia w danych z cache może znaczyć, że kontrahenta założono
+	// w panelu już po ostatnim odczycie. Zanim odpowiemy „nie znaleziono",
+	// sprawdzamy to na świeżej kartotece.
+	if len(dopasowane) == 0 && kartoteka.ZCache {
+		swieza, err := s.klient.Kontrahenci(ctx, true)
+		if err != nil {
+			s.log.WarnContext(ctx, "nie udało się odświeżyć kartoteki kontrahentów", "blad", err)
+		} else {
+			kartoteka = swieza
+			dopasowane = filtruj(kartoteka.Rekordy, fraza)
+		}
+	}
+	rekordy := kartoteka.Rekordy
+
 	wy := WyjscieKontrahenci{
 		Znaleziono:    len(dopasowane),
 		LacznieWBazie: len(rekordy),
@@ -177,12 +191,25 @@ func (s *Serwer) szukajProduktu(ctx context.Context, _ *mcp.CallToolRequest, we 
 		return nil, WyjscieProdukty{}, fmt.Errorf("podaj frazę do wyszukania — fragment nazwy, kodu albo opisu")
 	}
 
-	rekordy, err := s.klient.ListProducts(ctx)
+	kartoteka, err := s.klient.Produkty(ctx, false)
 	if err != nil {
 		return nil, WyjscieProdukty{}, bladDlaModelu("odczyt kartoteki produktów", err)
 	}
 
-	dopasowane := filtruj(rekordy, fraza)
+	dopasowane := filtruj(kartoteka.Rekordy, fraza)
+	// Tak jak przy kontrahentach: produkt dodany przed chwilą w panelu nie może
+	// zniknąć na czas życia cache.
+	if len(dopasowane) == 0 && kartoteka.ZCache {
+		swieza, err := s.klient.Produkty(ctx, true)
+		if err != nil {
+			s.log.WarnContext(ctx, "nie udało się odświeżyć kartoteki produktów", "blad", err)
+		} else {
+			kartoteka = swieza
+			dopasowane = filtruj(kartoteka.Rekordy, fraza)
+		}
+	}
+	rekordy := kartoteka.Rekordy
+
 	wy := WyjscieProdukty{
 		Znaleziono:    len(dopasowane),
 		LacznieWBazie: len(rekordy),

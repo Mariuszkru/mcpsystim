@@ -93,11 +93,12 @@ func uruchom() error {
 	slog.SetDefault(log)
 
 	klient, err := systim.NewClient(systim.Opcje{
-		Konto:   cfg.Konto,
-		Login:   cfg.Login,
-		Pass:    cfg.Pass,
-		Timeout: cfg.Timeout,
-		Logger:  log,
+		Konto:       cfg.Konto,
+		Login:       cfg.Login,
+		Pass:        cfg.Pass,
+		Timeout:     cfg.Timeout,
+		TTLKartotek: cfg.TTLKartotek,
+		Logger:      log,
 	})
 	if err != nil {
 		return err
@@ -134,6 +135,7 @@ func uruchom() error {
 		"konto", cfg.Konto,
 		"katalog_pdf", cfg.KatalogPDF,
 		"stawki_vat", stawki.Dostepne(),
+		"cache_kartotek", cfg.TTLKartotek.String(),
 	)
 
 	switch cfg.Transport {

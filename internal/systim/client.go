@@ -18,6 +18,11 @@ import (
 // w base64 wewnątrz JSON, więc limit musi być hojny, ale nie nieskończony.
 const maxCialoOdpowiedzi = 64 << 20 // 64 MiB
 
+// progWolnegoWywolania to czas, powyżej którego wywołanie API trafia do logów
+// jako ostrzeżenie. Przy domyślnym LOG_LEVEL=info to jedyny sygnał, że wąskim
+// gardłem jest Systim, a nie ten serwer.
+const progWolnegoWywolania = 5 * time.Second
+
 // Client to klient API Systim. Jest bezpieczny do użycia z wielu goroutine.
 //
 // Token sesji trzymamy w pamięci pod RWMutex. Sesje API padają regularnie — wygasają
@@ -34,6 +39,12 @@ type Client struct {
 	mu    sync.RWMutex
 	token string
 
+	// kartoteki cache'uje odczyty kartotek. Metody listujące Systim nie mają
+	// parametru wyszukiwania, więc każde wyszukanie kontrahenta czy produktu
+	// pobiera całą kartotekę — bez cache ta sama lista jedzie po sieci kilka razy
+	// przy jednej fakturze.
+	kartoteki *cacheKartotek
+
 	// loginMu serializuje logowanie. Gdy kilka narzędzi jednocześnie dostanie błąd 13,
 	// logujemy się raz: pierwsza goroutine odświeża token, pozostałe po wejściu do
 	// sekcji krytycznej widzą już nowy token i tylko go odczytują (podwójne sprawdzenie).
@@ -48,7 +59,10 @@ type Opcje struct {
 	Pass  string
 	// Timeout dotyczy pojedynczego wywołania HTTP do Systim.
 	Timeout time.Duration
-	Logger  *slog.Logger
+	// TTLKartotek to czas życia cache kartotek kontrahentów i produktów.
+	// Zero wyłącza cache — każdy odczyt idzie wtedy do API.
+	TTLKartotek time.Duration
+	Logger      *slog.Logger
 	// BaseURL nadpisuje adres endpointu. Używane wyłącznie w testach.
 	BaseURL string
 }
@@ -74,11 +88,12 @@ func NewClient(o Opcje) (*Client, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Client{
-		baseURL: base,
-		login:   o.Login,
-		pass:    o.Pass,
-		httpc:   &http.Client{Timeout: o.Timeout},
-		log:     log,
+		baseURL:   base,
+		login:     o.Login,
+		pass:      o.Pass,
+		httpc:     &http.Client{Timeout: o.Timeout},
+		log:       log,
+		kartoteki: nowyCacheKartotek(o.TTLKartotek),
 	}, nil
 }
 
@@ -213,6 +228,7 @@ func (c *Client) zadanie(ctx context.Context, act string, params url.Values, tok
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 	req.Header.Set("Accept", "application/json")
 
+	poczatek := time.Now()
 	resp, err := c.httpc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("połączenie z Systim (metoda %s): %w", act, err)
@@ -222,6 +238,23 @@ func (c *Client) zadanie(ctx context.Context, act string, params url.Values, tok
 	dane, err := io.ReadAll(io.LimitReader(resp.Body, maxCialoOdpowiedzi))
 	if err != nil {
 		return nil, fmt.Errorf("odczyt odpowiedzi Systim (metoda %s): %w", act, err)
+	}
+	// Czas mierzymy do końca odczytu ciała, a nie do nagłówków — przy pełnej
+	// kartotece albo PDF-ie w base64 to transfer jest kosztem, nie nawiązanie
+	// połączenia.
+	czas := time.Since(poczatek)
+	c.log.DebugContext(ctx, "odpowiedź API Systim",
+		"act", act,
+		"http", resp.StatusCode,
+		"czas_ms", czas.Milliseconds(),
+		"bajtow", len(dane),
+	)
+	if czas >= progWolnegoWywolania {
+		c.log.WarnContext(ctx, "wywołanie API Systim trwało długo",
+			"act", act,
+			"czas_ms", czas.Milliseconds(),
+			"bajtow", len(dane),
+		)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Systim odpowiedziało kodem HTTP %d na metodę %s: %s",

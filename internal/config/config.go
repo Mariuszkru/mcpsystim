@@ -61,6 +61,9 @@ type Config struct {
 	IDNumeracji map[int]string
 	VatIDs      map[string]int
 	Timeout     time.Duration
+	// TTLKartotek to czas życia cache kartotek kontrahentów i produktów.
+	// Zero wyłącza cache.
+	TTLKartotek time.Duration
 	// FormyPlatnosciIDs mapuje nazwę formy płatności na jej ID w kartotece Systim.
 	// Domyślnie systim.IDFormyPlatnosci, nadpisywalne przez SYSTIM_FORMY_PLATNOSCI.
 	FormyPlatnosciIDs map[string]string
@@ -143,6 +146,7 @@ func Wczytaj() (*Config, error) {
 	c.FormyPlatnosciIDs = wczytajFormyPlatnosciIDs(&z)
 	c.VatIDs = wczytajVatIDs(&z)
 	c.Timeout = wczytajCzas(&z, "SYSTIM_TIMEOUT", DomyslnyTimeout)
+	c.TTLKartotek = wczytajCzasZZerem(&z, "SYSTIM_CACHE_KARTOTEK", systim.DomyslnyTTLKartotek)
 
 	// --- serwer ---
 	c.Transport = wczytajTransport(&z)
@@ -307,6 +311,25 @@ func wczytajCzas(z *zbieraczBledow, nazwa string, domyslny time.Duration) time.D
 	}
 	if d <= 0 {
 		z.dodaj("%s = %q musi być dodatnie", nazwa, raw)
+		return domyslny
+	}
+	return d
+}
+
+// wczytajCzasZZerem działa jak wczytajCzas, ale dopuszcza zero jako świadome
+// wyłączenie mechanizmu (np. cache kartotek).
+func wczytajCzasZZerem(z *zbieraczBledow, nazwa string, domyslny time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(nazwa))
+	if raw == "" {
+		return domyslny
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		z.dodaj("%s = %q nie jest poprawnym czasem (oczekuję np. 5m, 30s albo 0 dla wyłączenia)", nazwa, raw)
+		return domyslny
+	}
+	if d < 0 {
+		z.dodaj("%s = %q nie może być ujemne (0 wyłącza mechanizm)", nazwa, raw)
 		return domyslny
 	}
 	return d

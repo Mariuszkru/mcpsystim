@@ -260,16 +260,14 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 // nazwaKontrahenta odczytuje nazwę odbiorcy z kartoteki. Zwraca też ostrzeżenie,
 // gdy kontrahenta nie udało się potwierdzić.
 func (s *Serwer) nazwaKontrahenta(ctx context.Context, id string) (string, string) {
-	rekordy, err := s.klient.ListCompanies(ctx)
+	r, ok, err := s.klient.KontrahentPoID(ctx, id)
 	if err != nil {
 		s.log.WarnContext(ctx, "nie udało się odczytać kartoteki kontrahentów do podglądu", "blad", err)
 		return "", "Nie udało się potwierdzić kontrahenta w kartotece Systim, więc podgląd pokazuje " +
 			"samo ID. Sprawdź, czy id_kontrahenta jest poprawne — API odrzuci dokument ze złym ID."
 	}
-	for _, r := range rekordy {
-		if r.ID == id {
-			return r.Nazwa(), ""
-		}
+	if ok {
+		return r.Nazwa(), ""
 	}
 	return "", fmt.Sprintf(
 		"W kartotece Systim nie ma kontrahenta o ID %s. Zatwierdzenie zakończy się błędem — "+

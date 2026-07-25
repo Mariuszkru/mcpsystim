@@ -20,25 +20,73 @@ func (c *Client) ListVatRates(ctx context.Context) ([]Rekord, error) {
 	return dekodujListe[Rekord](raw)
 }
 
+// kartoteka odczytuje kartotekę przez cache, wołając podaną metodę API dopiero
+// wtedy, gdy cache nie ma świeżych danych.
+func (c *Client) kartoteka(ctx context.Context, klucz, act string, odswiez bool) (Kartoteka, error) {
+	return c.kartoteki.pobierz(ctx, klucz, odswiez, func(ctx context.Context) ([]Rekord, error) {
+		raw, err := c.Wywolaj(ctx, act, url.Values{})
+		if err != nil {
+			return nil, pustaListaNieJestBledem(err)
+		}
+		return dekodujListe[Rekord](raw)
+	})
+}
+
+// Kontrahenci zwraca kartotekę kontrahentów wraz z indeksem po ID.
+//
+// odswiez wymusza pominięcie cache. Warto po nie sięgnąć, gdy szukany rekord
+// nie znalazł się w danych z cache — kontrahent mógł zostać założony w panelu
+// już po ostatnim odczycie.
+func (c *Client) Kontrahenci(ctx context.Context, odswiez bool) (Kartoteka, error) {
+	return c.kartoteka(ctx, kluczKontrahenci, "listCompanies", odswiez)
+}
+
 // ListCompanies zwraca kartotekę kontrahentów.
 //
 // API nie przyjmuje parametru wyszukiwania, więc filtrowanie odbywa się po stronie
 // tego serwera.
 func (c *Client) ListCompanies(ctx context.Context) ([]Rekord, error) {
-	raw, err := c.Wywolaj(ctx, "listCompanies", url.Values{})
-	if err != nil {
-		return nil, pustaListaNieJestBledem(err)
+	k, err := c.Kontrahenci(ctx, false)
+	return k.Rekordy, err
+}
+
+// KontrahentPoID zwraca jeden rekord kartoteki kontrahentów.
+//
+// Przy braku trafienia w danych z cache kartoteka jest odczytywana ponownie —
+// inaczej kontrahent założony w panelu przed chwilą wyglądałby na nieistniejący
+// przez cały czas życia wpisu w cache.
+func (c *Client) KontrahentPoID(ctx context.Context, id string) (Rekord, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Rekord{}, false, nil
 	}
-	return dekodujListe[Rekord](raw)
+	k, err := c.Kontrahenci(ctx, false)
+	if err != nil {
+		return Rekord{}, false, err
+	}
+	if r, ok := k.PoID[id]; ok {
+		return r, true, nil
+	}
+	if !k.ZCache {
+		// Dane są świeże — skoro rekordu w nich nie ma, to go po prostu nie ma.
+		return Rekord{}, false, nil
+	}
+	if k, err = c.Kontrahenci(ctx, true); err != nil {
+		return Rekord{}, false, err
+	}
+	r, ok := k.PoID[id]
+	return r, ok, nil
+}
+
+// Produkty zwraca kartotekę produktów i usług wraz z indeksem po ID.
+func (c *Client) Produkty(ctx context.Context, odswiez bool) (Kartoteka, error) {
+	return c.kartoteka(ctx, kluczProdukty, "listProducts", odswiez)
 }
 
 // ListProducts zwraca kartotekę produktów i usług.
 func (c *Client) ListProducts(ctx context.Context) ([]Rekord, error) {
-	raw, err := c.Wywolaj(ctx, "listProducts", url.Values{})
-	if err != nil {
-		return nil, pustaListaNieJestBledem(err)
-	}
-	return dekodujListe[Rekord](raw)
+	k, err := c.Produkty(ctx, false)
+	return k.Rekordy, err
 }
 
 // FiltrFaktur zawęża listę faktur sprzedaży. Wszystkie pola są opcjonalne.
