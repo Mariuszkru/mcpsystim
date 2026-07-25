@@ -248,11 +248,11 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 				"dokumencie — Systim wstawi gotówkę. Uzupełnij SYSTIM_FORMY_PLATNOSCI.",
 			formaPlatnosci))
 	}
-	if we.Rodzaj == systim.RodzajFakturaVAT {
-		wy.Ostrzezenia = append(wy.Ostrzezenia,
-			"Przy pierwszym uruchomieniu na nowym koncie wystaw najpierw pro formę (rodzaj 1) "+
-				"i sprawdź dokument w panelu, zanim wystawisz fakturę VAT.")
-	}
+	// if we.Rodzaj == systim.RodzajFakturaVAT {
+	// 	wy.Ostrzezenia = append(wy.Ostrzezenia,
+	// 		"Przy pierwszym uruchomieniu na nowym koncie wystaw najpierw pro formę (rodzaj 1) "+
+	// 			"i sprawdź dokument w panelu, zanim wystawisz fakturę VAT.")
+	// }
 
 	return tekst(podgladTekstowy(wy)), wy, nil
 }
