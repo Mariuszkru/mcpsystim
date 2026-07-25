@@ -16,8 +16,12 @@ const formatDaty = "2006-01-02"
 // tekst pakuje czytelną odpowiedź dla modelu.
 //
 // SDK samo wypełniłoby Content JSON-em struktury wyjściowej, ale czytelny tekst
-// po polsku jest dla modelu wyraźniejszy — struktura i tak jedzie równolegle
-// w StructuredContent.
+// po polsku jest dla modelu wyraźniejszy.
+//
+// Uwaga: tekst musi być samowystarczalny. StructuredContent jedzie równolegle,
+// ale nie każdy klient MCP go pokazuje — klient Chat w Claude podaje modelowi
+// sam Content. Każdy identyfikator potrzebny do kolejnego wywołania (szkic_id,
+// id_faktury, id_kontrahenta, id_produktu) musi więc znaleźć się w tekście.
 func tekst(s string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: s}},

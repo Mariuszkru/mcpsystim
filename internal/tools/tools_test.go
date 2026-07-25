@@ -355,6 +355,44 @@ func TestPrzygotujFaktureNiczegoNieZapisuje(t *testing.T) {
 	}
 }
 
+// Klienci MCP, które pokazują modelowi sam Content bez StructuredContent (np.
+// zakładka Chat w Claude), muszą móc odczytać szkic_id z tekstu — inaczej podgląd
+// powstaje, ale zatwierdzenia nie da się już wykonać, bo szkicu nie da się odtworzyć.
+func TestPodgladTekstowyZawieraSzkicID(t *testing.T) {
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	sesja := polaczonyKlient(t, s)
+
+	wynik, err := sesja.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta":   "41",
+			"data_wystawienia": "2026-07-24",
+			"pozycje": []map[string]any{
+				{"opis": "Konsultacje", "ilosc": "1", "cena_netto": "200", "stawka_vat": "23"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool = %v", err)
+	}
+	if wynik.IsError {
+		t.Fatalf("narzędzie zwróciło błąd: %s", tekstWyniku(t, wynik))
+	}
+
+	wy := strukturaWyniku[WyjsciePrzygotuj](t, wynik)
+	if wy.SzkicID == "" {
+		t.Fatal("brak szkic_id w StructuredContent")
+	}
+	tresc := tekstWyniku(t, wynik)
+	if !strings.Contains(tresc, wy.SzkicID) {
+		t.Errorf("podgląd tekstowy nie zawiera szkic_id — klient bez StructuredContent "+
+			"nie wystawi dokumentu:\n%s", tresc)
+	}
+}
+
 func TestPrzygotujFaktureStawkaBezMapowania(t *testing.T) {
 	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
 		io.WriteString(w, `{"error":{"code":0,"message":""},"result":[]}`)

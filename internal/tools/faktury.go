@@ -329,8 +329,12 @@ func podgladTekstowy(w WyjsciePrzygotuj) string {
 	}
 
 	fmt.Fprintf(&b, "\nSzkic ważny do %s.\n", w.WaznyDo)
+	// szkic_id musi być w tekście, a nie tylko w StructuredContent: część klientów
+	// MCP podaje modelowi wyłącznie Content, a tej wartości nie da się odtworzyć —
+	// jest podpisana. Bez niej podgląd powstaje, ale dokumentu nie da się wystawić.
+	fmt.Fprintf(&b, "szkic_id: %s\n", w.SzkicID)
 	b.WriteString("Aby wystawić dokument, potwierdź kwoty z użytkownikiem i wywołaj " +
-		"zatwierdz_fakture z tym szkic_id. Operacja jest nieodwracalna.")
+		"zatwierdz_fakture z podanym wyżej szkic_id. Operacja jest nieodwracalna.")
 	return b.String()
 }
 
