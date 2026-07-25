@@ -43,11 +43,17 @@ const (
 // Config to komplet ustawień serwera.
 type Config struct {
 	// Dostęp do Systim.
-	Konto       string
-	Login       string
-	Pass        string
-	IDSzablonu  string
-	IDNumeracji string
+	Konto      string
+	Login      string
+	Pass       string
+	IDSzablonu string
+	// IDNumeracji mapuje rodzaj dokumentu na ID serii numeracji w Systim.
+	//
+	// W Systim seria numeracji jest przypisana do konkretnego typu dokumentu.
+	// Wysłanie ID serii nieodpowiadającej polu "rodzaj" kończy się odrzuceniem
+	// dokumentu komunikatem „błędne przypisanie rodzaju dokumentu do numeracji",
+	// dlatego jedna wartość dla wszystkich rodzajów nie wystarcza.
+	IDNumeracji map[int]string
 	VatIDs      map[string]int
 	Timeout     time.Duration
 
@@ -114,7 +120,7 @@ func Wczytaj() (*Config, error) {
 	c.Login = wymagane(&z, "SYSTIM_LOGIN", "użytkownik z wygenerowanym hasłem API")
 	c.Pass = wymagane(&z, "SYSTIM_PASS", "hasło do API (generowane w panelu, inne niż hasło do logowania)")
 	c.IDSzablonu = wymagane(&z, "SYSTIM_ID_SZABLONU", "ID szablonu dokumentu; bez niego API odrzuca dokument")
-	c.IDNumeracji = wymagane(&z, "SYSTIM_ID_NUMERACJI", "ID numeracji; bez niego API odrzuca dokument")
+	c.IDNumeracji = wczytajNumeracje(&z)
 
 	if s := os.Getenv("SYSTIM_KONTO"); s != "" && strings.Contains(s, ".") {
 		z.dodaj("SYSTIM_KONTO = %q wygląda na pełny adres; podaj samą poddomenę (np. abcd, nie abcd.systim.pl)", s)
@@ -337,6 +343,84 @@ func wczytajKlucz(z *zbieraczBledow) []byte {
 	return []byte(raw)
 }
 
+// NumeracjeDomyslne mapuje rodzaj dokumentu na ID serii numeracji ze standardowej
+// kartoteki numeracji Systim (panel → Ustawienia → Numeracja dokumentów).
+//
+// Te ID są stałe w Systim — identyfikują typ dokumentu, a nie konkretną serię
+// klienta, więc te same wartości działają na różnych kontach. Symbol i wzór
+// numeracji można w panelu zmieniać, ale ID typu pozostaje.
+//
+// Wartości potwierdzone na eksporcie z zakładki „Numeracja dokumentów".
+// Jeśli u Ciebie są inne, nadpisz je zmienną SYSTIM_ID_NUMERACJI.
+var NumeracjeDomyslne = map[int]int{
+	0:  1,  // faktura VAT            → Faktura VAT (FV)
+	1:  5,  // pro forma              → Faktura Pro Forma (PF)
+	6:  39, // paragon fiskalny       → Paragon fiskalny (PFA)
+	15: 9,  // paragon niefiskalny    → Paragon (PA)
+	22: 16, // rachunek               → Faktura zw. z VAT, d. Rachunek (FA)
+	26: 21, // oferta                 → Oferta (OF)
+}
+
+// wczytajNumeracje odczytuje SYSTIM_ID_NUMERACJI.
+//
+// Przyjmuje dwie postacie:
+//   - pojedyncza liczba, np. 1 — użyta dla wszystkich rodzajów dokumentów;
+//     zachowane dla zgodności wstecznej, ale działa tylko wtedy, gdy wystawiasz
+//     jeden typ dokumentu;
+//   - mapa JSON rodzaj → ID, np. {"0":1,"1":5} — uzupełniana brakującymi
+//     rodzajami z NumeracjeDomyslne.
+func wczytajNumeracje(z *zbieraczBledow) map[int]string {
+	raw := strings.TrimSpace(os.Getenv("SYSTIM_ID_NUMERACJI"))
+	if raw == "" {
+		z.dodaj(`brak wymaganej zmiennej SYSTIM_ID_NUMERACJI (ID serii numeracji; bez niej ` +
+			`API odrzuca dokument). Zalecana postać to mapa rodzaj → ID, np. {"0":1,"1":5} ` +
+			`— w Systim numeracja jest przypisana do typu dokumentu. ` +
+			`ID odczytasz w panelu: Ustawienia → Numeracja dokumentów`)
+		return nil
+	}
+
+	out := make(map[int]string, len(NumeracjeDomyslne))
+
+	// Postać skrócona: jedna liczba dla wszystkich rodzajów.
+	if id, err := strconv.Atoi(raw); err == nil {
+		if id <= 0 {
+			z.dodaj("SYSTIM_ID_NUMERACJI = %d musi być liczbą dodatnią", id)
+			return nil
+		}
+		for rodzaj := range NumeracjeDomyslne {
+			out[rodzaj] = strconv.Itoa(id)
+		}
+		return out
+	}
+
+	var luzne map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &luzne); err != nil {
+		z.dodaj(`SYSTIM_ID_NUMERACJI = %q nie jest ani liczbą, ani poprawnym JSON-em. `+
+			`Oczekuję np. 1 albo {"0":1,"1":5}: %v`, raw, err)
+		return nil
+	}
+
+	// Najpierw wartości domyślne, potem nadpisania z konfiguracji.
+	for rodzaj, id := range NumeracjeDomyslne {
+		out[rodzaj] = strconv.Itoa(id)
+	}
+	for k, v := range luzne {
+		rodzaj, err := strconv.Atoi(strings.TrimSpace(k))
+		if err != nil {
+			z.dodaj("SYSTIM_ID_NUMERACJI: klucz %q nie jest numerem rodzaju dokumentu", k)
+			continue
+		}
+		s := strings.Trim(strings.TrimSpace(string(v)), `"`)
+		id, err := strconv.Atoi(s)
+		if err != nil || id <= 0 {
+			z.dodaj("SYSTIM_ID_NUMERACJI: rodzaj %d ma wartość %q, która nie jest dodatnią liczbą całkowitą", rodzaj, s)
+			continue
+		}
+		out[rodzaj] = strconv.Itoa(id)
+	}
+	return out
+}
+
 // DomyslneScopesZadane to scope'y doklejane do OIDC_SCOPE przy ogłaszaniu ich
 // klientowi.
 //
@@ -387,6 +471,21 @@ func wczytajListe(nazwa string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// Numeracja zwraca ID serii numeracji właściwej dla danego rodzaju dokumentu.
+//
+// Brak wpisu jest błędem konfiguracji, a nie sytuacją do zignorowania: wysłanie
+// numeracji od innego typu dokumentu kończy się odrzuceniem przez API.
+func (c *Config) Numeracja(rodzaj int) (string, error) {
+	if id, ok := c.IDNumeracji[rodzaj]; ok && id != "" {
+		return id, nil
+	}
+	return "", fmt.Errorf(
+		"brak ID numeracji dla rodzaju dokumentu %d. W Systim numeracja jest przypisana "+
+			"do typu dokumentu, więc każdy wystawiany rodzaj musi mieć własny wpis. "+
+			"Uzupełnij SYSTIM_ID_NUMERACJI, np. {\"0\":1,\"1\":5}; ID odczytasz w panelu: "+
+			"Ustawienia → Numeracja dokumentów", rodzaj)
 }
 
 // URLSystim zwraca adres endpointu API dla skonfigurowanego konta.

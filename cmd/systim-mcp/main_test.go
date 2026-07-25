@@ -110,7 +110,7 @@ func srodowisko(t *testing.T, idp *idpTestowy, wylaczAutoryzacje bool) (*httptes
 	cfg := &config.Config{
 		Konto:        "abcd",
 		IDSzablonu:   "3",
-		IDNumeracji:  "5",
+		IDNumeracji:  map[int]string{0: "1", 1: "5"},
 		KatalogPDF:   t.TempDir(),
 		PublicURL:    "https://mcp.firma.pl",
 		OIDCIssuer:   idp.srv.URL,

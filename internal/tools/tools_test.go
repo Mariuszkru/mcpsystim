@@ -70,7 +70,7 @@ func serwerDoTestow(t *testing.T, a *atrapaSystim) (*Serwer, *invoicing.PodpisSz
 	katalog := t.TempDir()
 	cfg := &config.Config{
 		IDSzablonu:  "3",
-		IDNumeracji: "5",
+		IDNumeracji: map[int]string{0: "1", 1: "5"},
 		KatalogPDF:  katalog,
 		MaxPozycji:  config.DomyslnyMaxPozycji,
 	}
@@ -493,8 +493,10 @@ func TestZatwierdzFaktureWysylaTabliceIczytaResultCode(t *testing.T) {
 		t.Errorf("stawka_vat[0] = %q, chcę 1 (ID stawki, nie procent 23)", got)
 	}
 	// id_szablonu i id_numeracji muszą być obecne — bez nich API odrzuca dokument.
-	if a.ostatnieCialo.Get("id_szablonu") != "3" || a.ostatnieCialo.Get("id_numeracji") != "5" {
-		t.Errorf("id_szablonu = %q, id_numeracji = %q", a.ostatnieCialo.Get("id_szablonu"), a.ostatnieCialo.Get("id_numeracji"))
+	// Numeracja jest dobrana do rodzaju dokumentu; tu rodzaj to 0 (faktura VAT).
+	if a.ostatnieCialo.Get("id_szablonu") != "3" || a.ostatnieCialo.Get("id_numeracji") != "1" {
+		t.Errorf("id_szablonu = %q, id_numeracji = %q, chcę 3 i 1",
+			a.ostatnieCialo.Get("id_szablonu"), a.ostatnieCialo.Get("id_numeracji"))
 	}
 	if a.ostatnieCialo.Get("termin_platnosci") != "14" {
 		t.Errorf("termin_platnosci = %q, chcę 14", a.ostatnieCialo.Get("termin_platnosci"))
@@ -846,5 +848,96 @@ func TestNarzedziaZglaszajaBladThrottlingu(t *testing.T) {
 	}
 	if !strings.Contains(tekstWyniku(t, wynik), "throttling") {
 		t.Errorf("komunikat nie sugeruje throttlingu:\n%s", tekstWyniku(t, wynik))
+	}
+}
+
+func TestNumeracjaDobieranaDoRodzajuDokumentu(t *testing.T) {
+	// Regresja z produkcji: przy jednej numeracji dla wszystkich rodzajów Systim
+	// odrzucał pro formę komunikatem „błędne przypisanie rodzaju dokumentu do numeracji".
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		switch act {
+		case "addSellInvoice":
+			a.ostatnieCialo = form
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"id":"7","numer":"PF 1\/07\/2026","result_code":0}}`)
+		default:
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+		}
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	sesja := polaczonyKlient(t, s)
+	ctx := context.Background()
+
+	przygotowanie, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta":   "41",
+			"data_wystawienia": "2026-07-25",
+			"rodzaj":           1, // pro forma
+			"pozycje": []map[string]any{
+				{"opis": "Usługa", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("przygotuj_fakture = %v", err)
+	}
+	if przygotowanie.IsError {
+		t.Fatalf("przygotuj_fakture zwróciło błąd: %s", tekstWyniku(t, przygotowanie))
+	}
+	szkic := strukturaWyniku[WyjsciePrzygotuj](t, przygotowanie)
+
+	wynik, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "zatwierdz_fakture",
+		Arguments: map[string]any{"szkic_id": szkic.SzkicID},
+	})
+	if err != nil {
+		t.Fatalf("zatwierdz_fakture = %v", err)
+	}
+	if wynik.IsError {
+		t.Fatalf("zatwierdz_fakture zwróciło błąd: %s", tekstWyniku(t, wynik))
+	}
+
+	// Pro forma musi dostać numerację pro form (5), a nie faktury VAT (1).
+	if got := a.ostatnieCialo.Get("id_numeracji"); got != "5" {
+		t.Errorf("id_numeracji = %q, chcę 5 dla pro formy", got)
+	}
+	if got := a.ostatnieCialo.Get("rodzaj"); got != "1" {
+		t.Errorf("rodzaj = %q, chcę 1", got)
+	}
+}
+
+func TestBrakNumeracjiDlaRodzajuWykrytyJuzWPodgladzie(t *testing.T) {
+	// Błąd konfiguracji ma wyjść przy przygotuj_fakture, a nie dopiero przy
+	// nieodwracalnym zatwierdzeniu.
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		if act == "addSellInvoice" {
+			t.Error("dokument bez numeracji nie może dotrzeć do addSellInvoice")
+		}
+		io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	// Konfiguracja zna tylko fakturę VAT.
+	s.cfg.IDNumeracji = map[int]string{0: "1"}
+	sesja := polaczonyKlient(t, s)
+
+	wynik, err := sesja.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta":   "41",
+			"data_wystawienia": "2026-07-25",
+			"rodzaj":           1,
+			"pozycje": []map[string]any{
+				{"opis": "Usługa", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool = %v", err)
+	}
+	if !wynik.IsError {
+		t.Fatal("brak numeracji dla pro formy został przepuszczony")
+	}
+	if !strings.Contains(tekstWyniku(t, wynik), "SYSTIM_ID_NUMERACJI") {
+		t.Errorf("komunikat nie podpowiada, co poprawić:\n%s", tekstWyniku(t, wynik))
 	}
 }

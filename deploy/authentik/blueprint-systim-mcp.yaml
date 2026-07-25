@@ -69,6 +69,26 @@ entries:
       client_id: !Context client_id
       client_secret: !Context client_secret
 
+      # BEZ TEGO POLA NIC NIE ZADZIAŁA.
+      #
+      # W authentiku (co najmniej od 2026.5) OAuth2Provider ma jawne pole
+      # grant_types, którego wartością domyślną jest PUSTA LISTA. Provider bez
+      # wpisanego tu grantu odrzuca każde żądanie autoryzacji błędem
+      # invalid_request („The request is otherwise malformed"), mimo że
+      # client_id i redirect_uri są poprawne.
+      #
+      # Objaw jest mylący z dwóch powodów: w logach authentika widać wtedy
+      # „Invalid grant_type for provider", a dokument discovery i tak ogłasza
+      # pełną listę grantów — bo to statyczna lista instancji, a nie ustawienie
+      # tego providera.
+      #
+      # Dozwolone wartości: authorization_code, implicit, hybrid, refresh_token,
+      # client_credentials, password, urn:ietf:params:oauth:grant-type:device_code.
+      # Claude potrzebuje dokładnie dwóch pierwszych z poniższych.
+      grant_types:
+        - authorization_code
+        - refresh_token
+
       authorization_flow:
         !Find [
           authentik_flows.flow,

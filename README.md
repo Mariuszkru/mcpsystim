@@ -68,9 +68,24 @@ pól powoduje odrzucenie dokumentu przez API.
 
 - **ID szablonu**: Panel Systim → Ustawienia → Szablony wydruku → wejdź w edycję
   wybranego szablonu i odczytaj parametr `id` z adresu URL.
-- **ID numeracji**: Panel Systim → Ustawienia → Numeracja dokumentów → analogicznie.
+- **ID numeracji**: Panel Systim → Ustawienia → Numeracja dokumentów. Kolumna `ID`
+  wskazuje serię, a **każdy typ dokumentu ma własną**.
 
 Wpisz je do `SYSTIM_ID_SZABLONU` i `SYSTIM_ID_NUMERACJI`.
+
+> **Numeracja jest przypisana do typu dokumentu.** Wysłanie numeracji faktury VAT
+> przy rodzaju „pro forma" kończy się odrzuceniem dokumentu komunikatem
+> „błędne przypisanie rodzaju dokumentu do numeracji". Dlatego `SYSTIM_ID_NUMERACJI`
+> przyjmuje mapę `rodzaj → ID`:
+>
+> ```
+> SYSTIM_ID_NUMERACJI={"0":1,"1":5}
+> ```
+>
+> Standardowe ID Systim (używane jako domyślne, gdy nie nadpiszesz):
+> `0` faktura VAT → **1**, `1` pro forma → **5**, `6` paragon fiskalny → **39**,
+> `15` paragon → **9**, `22` rachunek → **16**, `26` oferta → **21**.
+> Pojedyncza liczba nadal działa, ale obowiązuje dla wszystkich rodzajów naraz.
 
 ### 3. Odczytaj ID stawek VAT narzędziem `lista_stawek_vat`
 
@@ -168,7 +183,7 @@ znajduje się w [`.env.example`](.env.example).
 | `SYSTIM_LOGIN` | — | Użytkownik z wygenerowanym hasłem API |
 | `SYSTIM_PASS` | — | Hasło do API (inne niż hasło do panelu) |
 | `SYSTIM_ID_SZABLONU` | — | ID szablonu dokumentu |
-| `SYSTIM_ID_NUMERACJI` | — | ID numeracji |
+| `SYSTIM_ID_NUMERACJI` | — | Mapa `rodzaj → ID numeracji`, np. `{"0":1,"1":5}` |
 | `SYSTIM_VAT_IDS` | — | JSON: mapa stawka → ID |
 | `SYSTIM_TRANSPORT` | `http` | `http` albo `stdio` |
 | `SYSTIM_ADDR` | `:8000` | Adres nasłuchu |
@@ -419,6 +434,70 @@ Dwie możliwe przyczyny:
    w `network_mode: host`, żądania przychodzą z `127.0.0.1` przy nielokalnym
    nagłówku `Host`, co SDK traktuje jako próbę DNS rebinding. Wtedy ustaw
    `SYSTIM_WYLACZ_OCHRONE_LOCALHOST=true`.
+
+### Po dodaniu konektora Claude w ogóle nie przekierowuje do logowania
+
+Najczęstsza przyczyna: **provider w authentiku ma pustą listę `grant_types`.**
+
+W authentiku (co najmniej od 2026.5) `OAuth2Provider` ma jawne pole `grant_types`,
+którego wartością **domyślną jest pusta lista**. Provider bez wpisanego grantu
+odrzuca każde żądanie autoryzacji błędem `invalid_request` („The request is
+otherwise malformed"), mimo że `client_id` i `redirect_uri` są poprawne.
+
+Objaw myli z dwóch powodów:
+
+- dokument discovery **i tak ogłasza** `authorization_code` i `refresh_token` —
+  to statyczna lista instancji, a nie ustawienie tego providera;
+- authentik przekierowuje na zarejestrowany `redirect_uri` z błędem w parametrach,
+  więc z zewnątrz wygląda to jak poprawnie działający endpoint.
+
+Rozpoznanie — w logach authentika pojawia się wtedy wprost:
+
+```
+"event": "Invalid grant_type for provider", "grant_type": "authorization_code"
+```
+
+Sprawdzenie z zewnątrz, bez dostępu do logów (podstaw swój `client_id` i issuer):
+
+```bash
+curl -si "https://auth.recoop.pl/application/o/authorize/?client_id=systim-mcp-connector&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&response_type=code&scope=openid&state=t" | grep -i '^location:'
+```
+
+- `Location: /if/flow/...` → poprawnie, provider kieruje do logowania,
+- `Location: https://claude.ai/...?error=invalid_request` → brakuje `grant_types`.
+
+Naprawa: dołączony blueprint ustawia już `grant_types: [authorization_code,
+refresh_token]`. Zastosuj go ponownie albo uzupełnij pole ręcznie w authentiku
+(Applications → Providers → `systim-mcp`).
+
+Uwaga przy blueprintach: po zmianie pliku warto zrestartować kontener
+`authentik-worker` — to on je stosuje, a wykrycie zmiany bywa opóźnione.
+
+### „Błędne przypisanie rodzaju dokumentu do numeracji"
+
+Seria numeracji wskazana w `SYSTIM_ID_NUMERACJI` jest w Systim przypisana do innego
+typu dokumentu niż wystawiany `rodzaj`. Uzupełnij mapę o właściwy wpis, np. dla
+pro formy:
+
+```
+SYSTIM_ID_NUMERACJI={"0":1,"1":5}
+```
+
+ID odczytasz w panelu: Ustawienia → Numeracja dokumentów, kolumna `ID`.
+Od wersji z mapowaniem brak wpisu dla danego rodzaju jest wykrywany już
+w `przygotuj_fakture`, a więc **przed** nieodwracalnym zatwierdzeniem.
+
+### `pobierz_pdf` — permission denied
+
+Kontener działa jako UID 65532, a katalog na PDF-y należy do kogoś innego. Zdarza się
+przy bind moncie z hosta — wtedy katalog ma właściciela z systemu gospodarza:
+
+```bash
+sudo chown -R 65532:65532 <katalog-na-hoscie>
+```
+
+Nazwany wolumen (jak w dołączonym `docker-compose.yml`) dziedziczy właściciela
+z obrazu i tego problemu nie ma.
 
 ### Konektor działa kilkanaście minut, po czym się rozłącza
 

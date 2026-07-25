@@ -125,6 +125,11 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 	if we.TerminPlatnosci < 0 {
 		return nil, WyjsciePrzygotuj{}, errors.New("termin_platnosci to liczba dni i nie może być ujemny")
 	}
+	// Numerację sprawdzamy już na etapie podglądu, żeby brak wpisu dla tego rodzaju
+	// dokumentu wyszedł tutaj, a nie dopiero przy nieodwracalnym zatwierdzeniu.
+	if _, err := s.cfg.Numeracja(we.Rodzaj); err != nil {
+		return nil, WyjsciePrzygotuj{}, err
+	}
 
 	wejsciowe := make([]invoicing.PozycjaWejsciowa, 0, len(we.Pozycje))
 	for _, p := range we.Pozycje {
@@ -348,13 +353,20 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 			"wysyłka e-mailem wymaga podania adresu w polu email")
 	}
 
+	// Numeracja jest wybierana według rodzaju dokumentu zapisanego w szkicu,
+	// a nie według tego, co akurat stoi w konfiguracji jako pierwsze.
+	idNumeracji, err := s.cfg.Numeracja(dok.Rodzaj)
+	if err != nil {
+		return nil, WyjscieZatwierdz{}, err
+	}
+
 	zadanie := systim.ZadanieFaktury{
 		IDKontrahenta:   dok.IDKontrahenta,
 		DataWystawienia: dok.DataWystawienia,
 		DataSprzedazy:   dok.DataSprzedazy,
 		Rodzaj:          dok.Rodzaj,
 		IDSzablonu:      s.cfg.IDSzablonu,
-		IDNumeracji:     s.cfg.IDNumeracji,
+		IDNumeracji:     idNumeracji,
 		Pozycje:         invoicing.NaPozycjeSystim(dok.Pozycje),
 		TerminPlatnosci: dok.TerminPlatnosci,
 		FormaPlatnosci:  dok.FormaPlatnosci,

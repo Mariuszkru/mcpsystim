@@ -359,3 +359,125 @@ func zawiera(lista []string, v string) bool {
 	}
 	return false
 }
+
+func TestNumeracjaJakoMapaRodzajNaID(t *testing.T) {
+	// Systim wiąże serię numeracji z typem dokumentu. Wysłanie numeracji faktury VAT
+	// przy rodzaju „pro forma" kończy się odrzuceniem dokumentu komunikatem
+	// „błędne przypisanie rodzaju dokumentu do numeracji".
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_ID_NUMERACJI", `{"0":1,"1":5}`)
+
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	for _, p := range []struct {
+		rodzaj int
+		chce   string
+	}{
+		{0, "1"},   // faktura VAT
+		{1, "5"},   // pro forma
+		{22, "16"}, // rachunek — uzupełnione z wartości domyślnych
+		{26, "21"}, // oferta — j.w.
+	} {
+		got, err := c.Numeracja(p.rodzaj)
+		if err != nil {
+			t.Errorf("Numeracja(%d) = %v", p.rodzaj, err)
+			continue
+		}
+		if got != p.chce {
+			t.Errorf("Numeracja(%d) = %q, chcę %q", p.rodzaj, got, p.chce)
+		}
+	}
+}
+
+func TestNumeracjaPojedynczaWartoscDlaWszystkich(t *testing.T) {
+	// Zgodność wsteczna: pojedyncza liczba obowiązuje dla każdego rodzaju.
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_ID_NUMERACJI", "7")
+
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	for _, rodzaj := range []int{0, 1, 22} {
+		got, err := c.Numeracja(rodzaj)
+		if err != nil {
+			t.Fatalf("Numeracja(%d) = %v", rodzaj, err)
+		}
+		if got != "7" {
+			t.Errorf("Numeracja(%d) = %q, chcę 7", rodzaj, got)
+		}
+	}
+}
+
+func TestNumeracjaDomyslneGdyMapaNiepelna(t *testing.T) {
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_ID_NUMERACJI", `{"0":99}`)
+
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	if got, _ := c.Numeracja(0); got != "99" {
+		t.Errorf("Numeracja(0) = %q, chcę 99 — nadpisanie z konfiguracji", got)
+	}
+	// Pro forma nie została nadpisana, więc bierzemy wartość domyślną.
+	if got, _ := c.Numeracja(1); got != "5" {
+		t.Errorf("Numeracja(1) = %q, chcę 5 z wartości domyślnych", got)
+	}
+}
+
+func TestNumeracjaBrakWpisuDajeCzytelnyBlad(t *testing.T) {
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_ID_NUMERACJI", `{"0":1}`)
+
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	// Rodzaj spoza wartości domyślnych i spoza konfiguracji.
+	_, err = c.Numeracja(999)
+	if err == nil {
+		t.Fatal("Numeracja(999) = nil, chcę błędu")
+	}
+	for _, fragment := range []string{"999", "SYSTIM_ID_NUMERACJI", "Numeracja dokumentów"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Errorf("err = %v, chcę wzmianki o %q", err, fragment)
+		}
+	}
+}
+
+func TestNumeracjaWartosciNiepoprawne(t *testing.T) {
+	przypadki := []struct{ wartosc, fragment string }{
+		{"", "SYSTIM_ID_NUMERACJI"},
+		{"0", "dodatnią"},
+		{"-3", "dodatnią"},
+		{`{"0":"zero"}`, "nie jest dodatnią"},
+		{`{"abc":1}`, "nie jest numerem rodzaju"},
+		{"nie-json", "ani liczbą, ani poprawnym JSON-em"},
+	}
+	for _, p := range przypadki {
+		t.Run(p.wartosc, func(t *testing.T) {
+			ustawMinimalne(t)
+			t.Setenv("SYSTIM_ID_NUMERACJI", p.wartosc)
+			_, err := Wczytaj()
+			if err == nil {
+				t.Fatalf("Wczytaj = nil, chcę błędu dla %q", p.wartosc)
+			}
+			if !strings.Contains(err.Error(), p.fragment) {
+				t.Errorf("err = %v, chcę wzmianki o %q", err, p.fragment)
+			}
+		})
+	}
+}
+
+func TestNumeracjeDomyslneObejmujaWszystkieObslugiwaneRodzaje(t *testing.T) {
+	// Każdy rodzaj, który serwer potrafi wystawić, musi mieć domyślną numerację —
+	// inaczej użytkownik trafi na błąd dopiero przy pierwszym dokumencie tego typu.
+	for _, rodzaj := range []int{0, 1, 6, 15, 22, 26} {
+		if _, ok := NumeracjeDomyslne[rodzaj]; !ok {
+			t.Errorf("brak domyślnej numeracji dla rodzaju %d", rodzaj)
+		}
+	}
+}
