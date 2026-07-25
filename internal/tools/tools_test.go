@@ -1121,6 +1121,7 @@ func TestDomyslnaFormaPlatnosciTrafiaNaDokument(t *testing.T) {
 	if err != nil || wynik.IsError {
 		t.Fatalf("zatwierdz_fakture = %v / %s", err, tekstWyniku(t, wynik))
 	}
+	// Do API idzie nazwa formy — tak wymaga dokumentacja Systim.
 	if got := a.ostatnieCialo.Get("forma_platnosci"); got != "przelew" {
 		t.Errorf("forma_platnosci = %q, chcę przelew", got)
 	}
@@ -1189,5 +1190,76 @@ func TestListaFakturPokazujeFormePlatnosci(t *testing.T) {
 	}
 	if !strings.Contains(tekstWyniku(t, wynik), "przelew") {
 		t.Errorf("forma płatności nie trafiła do odpowiedzi tekstowej:\n%s", tekstWyniku(t, wynik))
+	}
+}
+
+func TestPodgladOstrzegaZeFormaPlatnosciMozeNieZadzialac(t *testing.T) {
+	// Sprawdzone na żywym koncie: API przyjmuje forma_platnosci bez błędu, ale
+	// dokumentom tworzonym przez API i tak ustawia gotówkę — zarówno przy nazwie
+	// zgodnej z dokumentacją, jak i przy ID. Użytkownik musi o tym wiedzieć,
+	// zamiast odkryć to dopiero na wydruku.
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	sesja := polaczonyKlient(t, s)
+
+	wynik, err := sesja.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta": "41", "data_wystawienia": "2026-07-25", "forma_platnosci": "przelew",
+			"pozycje": []map[string]any{{"opis": "U", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"}},
+		},
+	})
+	if err != nil || wynik.IsError {
+		t.Fatalf("przygotuj_fakture = %v / %s", err, tekstWyniku(t, wynik))
+	}
+	tresc := tekstWyniku(t, wynik)
+	if !strings.Contains(tresc, "NIE zostać zapisana") {
+		t.Errorf("podgląd nie ostrzega o niedziałającej formie płatności:\n%s", tresc)
+	}
+}
+
+func TestFormaPlatnosciWysylanaJakoIDGdyWlaczone(t *testing.T) {
+	a := nowaAtrapa(t, func(a *atrapaSystim, act string, form url.Values, w http.ResponseWriter) {
+		switch act {
+		case "addSellInvoice":
+			a.ostatnieCialo = form
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"id":"1","numer":"FV 1\/07\/2026","result_code":100}}`)
+		default:
+			io.WriteString(w, `{"error":{"code":0,"message":""},"result":{"41":{"nazwa":"Alfa"}}}`)
+		}
+	})
+	s, _, _ := serwerDoTestow(t, a)
+	s.cfg.FormaPlatnosciJakoID = true
+	s.cfg.FormyPlatnosciIDs = map[string]string{"przelew": "1", "gotówka": "2"}
+	sesja := polaczonyKlient(t, s)
+	ctx := context.Background()
+
+	przygotowanie, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name: "przygotuj_fakture",
+		Arguments: map[string]any{
+			"id_kontrahenta": "41", "data_wystawienia": "2026-07-25", "forma_platnosci": "przelew",
+			"pozycje": []map[string]any{{"opis": "U", "ilosc": "1", "cena_netto": "100", "stawka_vat": "23"}},
+		},
+	})
+	if err != nil || przygotowanie.IsError {
+		t.Fatalf("przygotuj_fakture = %v / %s", err, tekstWyniku(t, przygotowanie))
+	}
+	szkic := strukturaWyniku[WyjsciePrzygotuj](t, przygotowanie)
+	// Podgląd pokazuje nazwę — ID to szczegół transportu, nie treść dla użytkownika.
+	if szkic.FormaPlatnosci != "przelew" {
+		t.Errorf("podgląd pokazuje %q, chcę przelew", szkic.FormaPlatnosci)
+	}
+
+	wynik, err := sesja.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "zatwierdz_fakture",
+		Arguments: map[string]any{"szkic_id": szkic.SzkicID},
+	})
+	if err != nil || wynik.IsError {
+		t.Fatalf("zatwierdz_fakture = %v / %s", err, tekstWyniku(t, wynik))
+	}
+	if got := a.ostatnieCialo.Get("forma_platnosci"); got != "1" {
+		t.Errorf("forma_platnosci = %q, chcę 1 (ID przelewu)", got)
 	}
 }

@@ -239,6 +239,15 @@ func (s *Serwer) przygotujFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		wy.Ostrzezenia = append(wy.Ostrzezenia,
 			"Dokument zostanie wysłany do KSeF zaraz po wystawieniu.")
 	}
+	if formaPlatnosci != "" {
+		wy.Ostrzezenia = append(wy.Ostrzezenia, fmt.Sprintf(
+			"Forma płatności %q może NIE zostać zapisana na dokumencie. "+
+				"Sprawdzone na żywym koncie: API Systim przyjmuje to pole bez błędu, ale "+
+				"ignoruje je i wszystkim dokumentom tworzonym przez API ustawia gotówkę — "+
+				"zarówno przy przesłaniu nazwy zgodnej z dokumentacją, jak i ID. "+
+				"Zweryfikuj formę płatności w panelu i popraw ją tam, jeśli ma znaczenie.",
+			formaPlatnosci))
+	}
 	if we.Rodzaj == systim.RodzajFakturaVAT {
 		wy.Ostrzezenia = append(wy.Ostrzezenia,
 			"Przy pierwszym uruchomieniu na nowym koncie wystaw najpierw pro formę (rodzaj 1) "+
@@ -384,7 +393,7 @@ func (s *Serwer) zatwierdzFakture(ctx context.Context, _ *mcp.CallToolRequest, w
 		IDNumeracji:     idNumeracji,
 		Pozycje:         invoicing.NaPozycjeSystim(dok.Pozycje),
 		TerminPlatnosci: dok.TerminPlatnosci,
-		FormaPlatnosci:  dok.FormaPlatnosci,
+		FormaPlatnosci:  s.cfg.WartoscFormyPlatnosci(dok.FormaPlatnosci),
 		Uwagi:           dok.Uwagi,
 		Rabat:           dok.Rabat,
 		WyslijEmail:     we.WyslijEmail,

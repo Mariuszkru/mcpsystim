@@ -581,3 +581,64 @@ func TestDomyslnaFormaPlatnosciOpcjonalnaIWalidowana(t *testing.T) {
 		t.Errorf("err = %v, chcę listy dozwolonych form", err)
 	}
 }
+
+func TestFormatFormyPlatnosciNazwaAlboID(t *testing.T) {
+	// Dokumentacja Systim mówi „nazwa", ale nazwa nie odnosi skutku. Przełącznik
+	// pozwala sprawdzić wariant z ID bez zmiany kodu.
+	ustawMinimalne(t)
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	if c.FormaPlatnosciJakoID {
+		t.Error("domyślnie ma obowiązywać format zgodny z dokumentacją, czyli nazwa")
+	}
+	if got := c.WartoscFormyPlatnosci("przelew"); got != "przelew" {
+		t.Errorf("WartoscFormyPlatnosci = %q, chcę przelew", got)
+	}
+
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_FORMA_PLATNOSCI_FORMAT", "id")
+	c, err = Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	if !c.FormaPlatnosciJakoID {
+		t.Fatal("FormaPlatnosciJakoID = false, chcę true")
+	}
+	for nazwa, chce := range map[string]string{
+		"przelew": "1", "gotówka": "2", "barter": "3",
+		"za pobraniem": "4", "rozliczenie saldami": "5", "karta płatnicza": "6",
+	} {
+		if got := c.WartoscFormyPlatnosci(nazwa); got != chce {
+			t.Errorf("WartoscFormyPlatnosci(%q) = %q, chcę %q", nazwa, got, chce)
+		}
+	}
+	// Wielkość liter nie ma znaczenia.
+	if got := c.WartoscFormyPlatnosci("PRZELEW"); got != "1" {
+		t.Errorf("WartoscFormyPlatnosci(PRZELEW) = %q, chcę 1", got)
+	}
+}
+
+func TestFormatFormyPlatnosciWalidacjaINadpisanie(t *testing.T) {
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_FORMA_PLATNOSCI_FORMAT", "cokolwiek")
+	if _, err := Wczytaj(); err == nil {
+		t.Fatal("Wczytaj = nil, chcę błędu dla nieznanego formatu")
+	}
+
+	// ID da się nadpisać, gdy konto ma inną kartotekę.
+	ustawMinimalne(t)
+	t.Setenv("SYSTIM_FORMA_PLATNOSCI_FORMAT", "id")
+	t.Setenv("SYSTIM_FORMY_PLATNOSCI", `{"przelew":9}`)
+	c, err := Wczytaj()
+	if err != nil {
+		t.Fatalf("Wczytaj = %v", err)
+	}
+	if got := c.WartoscFormyPlatnosci("przelew"); got != "9" {
+		t.Errorf("WartoscFormyPlatnosci(przelew) = %q, chcę 9", got)
+	}
+	if got := c.WartoscFormyPlatnosci("gotówka"); got != "2" {
+		t.Errorf("WartoscFormyPlatnosci(gotówka) = %q, chcę 2 z wartości domyślnych", got)
+	}
+}
