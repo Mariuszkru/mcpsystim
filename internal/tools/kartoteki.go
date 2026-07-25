@@ -9,7 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/mkrukowski/systim-mcp/internal/systim"
+	"github.com/Mariuszkru/mcpsystim/internal/systim"
 )
 
 // --- lista_stawek_vat ---

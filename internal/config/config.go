@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mkrukowski/systim-mcp/internal/systim"
+	"github.com/Mariuszkru/mcpsystim/internal/systim"
 )
 
 // Transport określa sposób komunikacji z klientem MCP.

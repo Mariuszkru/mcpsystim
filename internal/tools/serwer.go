@@ -10,9 +10,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/mkrukowski/systim-mcp/internal/config"
-	"github.com/mkrukowski/systim-mcp/internal/invoicing"
-	"github.com/mkrukowski/systim-mcp/internal/systim"
+	"github.com/Mariuszkru/mcpsystim/internal/config"
+	"github.com/Mariuszkru/mcpsystim/internal/invoicing"
+	"github.com/Mariuszkru/mcpsystim/internal/systim"
 )
 
 // MaxWynikowWyszukiwania ogranicza liczbę zwracanych rekordów, żeby nie zapychać

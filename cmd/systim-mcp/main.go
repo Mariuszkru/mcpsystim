@@ -19,11 +19,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/mkrukowski/systim-mcp/internal/auth"
-	"github.com/mkrukowski/systim-mcp/internal/config"
-	"github.com/mkrukowski/systim-mcp/internal/invoicing"
-	"github.com/mkrukowski/systim-mcp/internal/systim"
-	"github.com/mkrukowski/systim-mcp/internal/tools"
+	"github.com/Mariuszkru/mcpsystim/internal/auth"
+	"github.com/Mariuszkru/mcpsystim/internal/config"
+	"github.com/Mariuszkru/mcpsystim/internal/invoicing"
+	"github.com/Mariuszkru/mcpsystim/internal/systim"
+	"github.com/Mariuszkru/mcpsystim/internal/tools"
 )
 
 // wersja jest nadpisywana przy budowaniu przez -ldflags "-X main.wersja=...".

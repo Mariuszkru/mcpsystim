@@ -3,6 +3,8 @@
 Serwer MCP (Model Context Protocol) integrujący Claude z systemem fakturowym
 [Systim](https://www.systim.pl/API/). Napisany w Go, uruchamiany jako kontener Docker.
 
+Repozytorium: <https://github.com/Mariuszkru/mcpsystim>
+
 Zakres jest celowo wąski: **wystawianie faktur sprzedaży** plus minimum narzędzi
 pomocniczych potrzebnych, żeby fakturę dało się poprawnie złożyć.
 
@@ -381,6 +383,9 @@ domyślną i przetestowaną drogą jest OAuth 2.1 z authentikiem.
 ### Docker Compose (docelowo)
 
 ```bash
+git clone https://github.com/Mariuszkru/mcpsystim.git
+cd mcpsystim
+cp .env.example .env    # uzupełnij wartości
 docker compose up -d --build
 ```
 
@@ -721,7 +726,7 @@ kandydatów. Nowe albo inaczej nazwane pole nadal dociera do użytkownika.
 ## Struktura
 
 ```
-systim-mcp/
+mcpsystim/
 ├── cmd/systim-mcp/main.go     # wybór transportu, wiring, shutdown, sonda
 ├── internal/
 │   ├── config/                # odczyt i walidacja env

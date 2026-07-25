@@ -6,7 +6,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"github.com/mkrukowski/systim-mcp/internal/systim"
+	"github.com/Mariuszkru/mcpsystim/internal/systim"
 )
 
 // PozycjaWejsciowa to pozycja tak, jak podaje ją użytkownik: bez policzonych kwot.

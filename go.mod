@@ -1,4 +1,4 @@
-module github.com/mkrukowski/systim-mcp
+module github.com/Mariuszkru/mcpsystim
 
 go 1.25.0
 

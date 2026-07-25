@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mkrukowski/systim-mcp/internal/systim"
+	"github.com/Mariuszkru/mcpsystim/internal/systim"
 )
 
 // ustawMinimalne ustawia komplet zmiennych wymaganych do poprawnego startu w trybie http.
