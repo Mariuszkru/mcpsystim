@@ -29,6 +29,9 @@ type idpTestowy struct {
 	klucz    *rsa.PrivateKey
 	kid      string
 	pobrania *atomic.Int32
+	// opoznienieJWKS spowalnia odpowiedź z kluczami. Potrzebne tam, gdzie test
+	// musi zdążyć ustawić kilka żądań w kolejce za jednym pobraniem.
+	opoznienieJWKS time.Duration
 }
 
 func nowyIdP(t *testing.T) *idpTestowy {
@@ -53,6 +56,9 @@ func nowyIdP(t *testing.T) *idpTestowy {
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
 		idp.pobrania.Add(1)
+		if idp.opoznienieJWKS > 0 {
+			time.Sleep(idp.opoznienieJWKS)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"keys": []any{idp.jwk()}})
 	})

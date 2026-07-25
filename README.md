@@ -575,6 +575,20 @@ curl -si -X POST https://mcp.firma.pl/mcp -H 'Content-Type: application/json' -d
 
 W parametrze `scope` powinny być `systim:faktury openid offline_access`.
 
+### Pojedyncze `401` zaraz po restarcie serwera
+
+W logach wygląda to sprzecznie: najpierw `pobrano zestaw kluczy z serwera
+autoryzacji`, a ułamek milisekundy później `odrzucono token dostępowy` z powodem
+„nieznany klucz podpisujący: zestaw kluczy odświeżano mniej niż 1m0s temu".
+
+Był to błąd w `ZrodloKluczy`, naprawiony: żądania czekające na cudze pobranie
+JWKS sprawdzały stan sprzed oczekiwania, więc trafiały w limit częstotliwości
+odświeżeń zamiast skorzystać z kluczy, które właśnie się pojawiły. Objawiało się
+przy zimnym starcie i przy rotacji kluczy, gdy przychodziło kilka żądań naraz —
+konektor się podnosił po ponowieniu, ale użytkownik widział losowe rozłączenie.
+
+Jeśli widzisz taką parę linii na starszej wersji, zaktualizuj serwer.
+
 ### `401` mimo poprawnego logowania — niezgodny `iss` albo `aud`
 
 Dwa najczęstsze przypadki przy authentiku:
@@ -654,6 +668,9 @@ mockujących. Pokrywają między innymi:
 - **Uwierzytelnianie:** `/mcp` bez tokenu → `401` z `WWW-Authenticate`; token
   z błędnym `aud`, po `exp`, z obcym `iss`, podpisany nieznanym kluczem, z `alg=none`
   i z `alg=HS256` → odrzucony; brak scope → `403`.
+- **JWKS przy zimnym cache:** 8 równoległych żądań na pusty zestaw kluczy daje
+  **jedno** pobranie i **żadnego** odrzuconego tokenu; nieznany `kid` nadal nie
+  dobija IdP, a klucz obecny w cache przechodzi mimo aktywnego limitu odświeżeń.
 - **Origin:** żądanie z obcym `Origin` → odrzucone; bez nagłówka → przepuszczone.
 - **Scope:** `WWW-Authenticate` ogłasza `offline_access`, ale token bez niego nadal
   przechodzi — o `offline_access` prosi się serwer autoryzacji, a nie sprawdza w tokenie.

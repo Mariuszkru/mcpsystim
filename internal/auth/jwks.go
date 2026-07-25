@@ -87,7 +87,7 @@ func (z *ZrodloKluczy) Klucz(ctx context.Context, kid string) (crypto.PublicKey,
 	if ok && swieze {
 		return k, nil
 	}
-	if err := z.odswiez(ctx, ok); err != nil {
+	if err := z.odswiez(ctx, kid); err != nil {
 		// Jeśli mamy klucz z poprzedniego pobrania, wolimy go użyć niż odrzucić
 		// wszystkie żądania tylko dlatego, że IdP chwilowo nie odpowiada.
 		if ok {
@@ -106,21 +106,32 @@ func (z *ZrodloKluczy) Klucz(ctx context.Context, kid string) (crypto.PublicKey,
 	return k, nil
 }
 
-// odswiez pobiera zestaw kluczy. mamyKlucz mówi, czy wołający ma już użyteczny klucz —
-// wtedy odświeżenie jest tylko odnowieniem cache i podlega limitowi częstotliwości.
-func (z *ZrodloKluczy) odswiez(ctx context.Context, mamyKlucz bool) error {
+// odswiez pobiera zestaw kluczy tak, żeby kid dało się rozwiązać.
+func (z *ZrodloKluczy) odswiez(ctx context.Context, kid string) error {
 	z.odswiezMu.Lock()
 	defer z.odswiezMu.Unlock()
 
-	// Podwójne sprawdzenie: ktoś mógł odświeżyć, zanim weszliśmy do sekcji krytycznej.
+	// Podwójne sprawdzenie: ktoś mógł odświeżyć zestaw, zanim weszliśmy do sekcji
+	// krytycznej. Pytamy przy tym wprost o nasz kid, a nie o to, co wiedzieliśmy
+	// przed wejściem.
+	//
+	// To rozróżnienie ma znaczenie przy zimnym starcie i przy rotacji kluczy, gdy
+	// kilka żądań naraz trafia na nieznany kid: pierwsze pobiera JWKS, a pozostałe
+	// czekają tutaj. Gdyby patrzeć na stan sprzed oczekiwania, wyglądałyby na takie,
+	// które nadal nie mają klucza, i wpadałyby w limit częstotliwości poniżej —
+	// czyli dostawałyby fałszywe 401 chwilę po tym, jak potrzebny klucz pojawił się
+	// w cache. Stan czytamy pod jednym RLockiem, żeby nie zmienił się w międzyczasie.
 	z.mu.RLock()
+	_, mamyKlucz := z.klucze[kid]
 	swieze := time.Since(z.pobrane) < odswiezenieJWKS
 	odOstatniejProby := time.Since(z.ostatniaProba)
+	pobraneNigdy := z.pobrane.IsZero()
 	z.mu.RUnlock()
+
 	if swieze && mamyKlucz {
 		return nil
 	}
-	if odOstatniejProby < minOdstepOdswiezen && !z.pobraneNigdy() {
+	if odOstatniejProby < minOdstepOdswiezen && !pobraneNigdy {
 		// Świeżo próbowaliśmy i się nie udało albo kid nadal nieznany — nie dobijamy IdP.
 		return fmt.Errorf("%w: zestaw kluczy odświeżano mniej niż %s temu", ErrNieznanyKlucz, minOdstepOdswiezen)
 	}
@@ -145,12 +156,6 @@ func (z *ZrodloKluczy) odswiez(ctx context.Context, mamyKlucz bool) error {
 
 	z.log.InfoContext(ctx, "pobrano zestaw kluczy z serwera autoryzacji", "jwks_uri", uri, "liczba_kluczy", len(klucze))
 	return nil
-}
-
-func (z *ZrodloKluczy) pobraneNigdy() bool {
-	z.mu.RLock()
-	defer z.mu.RUnlock()
-	return z.pobrane.IsZero()
 }
 
 // metadaneIdP to fragment dokumentu discovery, który nas interesuje.
