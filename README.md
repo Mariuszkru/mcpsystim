@@ -40,7 +40,7 @@ Nie używaj konta, którym logujesz się do panelu.
 | Go | 1.25+ — patrz [Decyzje projektowe](#decyzje-projektowe-i-odstępstwa) |
 | Docker | z obsługą BuildKit |
 | Konto Systim | z dostępem do API i wygenerowanym hasłem API |
-| Dostawca tożsamości | authentik — wdrożenie korzysta z `https://auth.recoop.pl` |
+| Dostawca tożsamości | authentik (samohostowany) |
 | Publiczny adres HTTPS | Claude łączy się z chmury Anthropic — localhost nie zadziała |
 
 ---
@@ -208,7 +208,7 @@ znajduje się w [`.env.example`](.env.example).
 | `SYSTIM_FORMY_PLATNOSCI` | standardowe ID | Mapa `nazwa → ID` formy płatności |
 | `SYSTIM_PUBLIC_URL` | — | Publiczny adres HTTPS serwera |
 | `SYSTIM_SZKIC_KLUCZ` | — | Klucz HMAC, min. 32 bajty |
-| `OIDC_ISSUER` | — | Issuer authentika, z ukośnikiem: `https://auth.recoop.pl/application/o/<slug>/` |
+| `OIDC_ISSUER` | — | Issuer authentika, z ukośnikiem: `https://auth.firma.pl/application/o/<slug>/` |
 | `OIDC_AUDIENCE` | — | Oczekiwane `aud` — w authentiku domyślnie `client_id` |
 | `OIDC_SCOPE` | — | Scope wymagany w tokenie |
 | `OIDC_SCOPES_REQUESTED` | `openid offline_access` | Scope'y ogłaszane klientowi; `offline_access` jest konieczny dla refresh tokenu |
@@ -222,7 +222,8 @@ znajduje się w [`.env.example`](.env.example).
 
 ## Uwierzytelnianie
 
-Wdrożenie korzysta z **authentika pod adresem `https://auth.recoop.pl`**.
+Uwierzytelnianie opiera się na **samohostowanym authentiku**. Adresy w tym
+rozdziale są przykładowe — podstaw własną instancję.
 
 ### Podział ról
 
@@ -263,7 +264,7 @@ z możliwością wyłączenia przez `SYSTIM_AUTH_DISABLED=true`.
 Gotowy blueprint: [`deploy/authentik/blueprint-systim-mcp.yaml`](deploy/authentik/blueprint-systim-mcp.yaml).
 Tworzy scope `systim:faktury`, provider OAuth2 i aplikację.
 
-Zastosowanie na `auth.recoop.pl` — jedna z dwóch dróg:
+Zastosowanie na własnej instancji — jedna z dwóch dróg:
 
 - **authentik → Customization → Blueprints → Create**, wskazując plik, albo
 - montując katalog `deploy/authentik` do `/blueprints/custom` w kontenerach
@@ -278,7 +279,7 @@ openssl rand -base64 48
 Po zaaplikowaniu ustaw w `.env`:
 
 ```
-OIDC_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/
+OIDC_ISSUER=https://auth.firma.pl/application/o/systim-mcp/
 OIDC_AUDIENCE=systim-mcp-connector
 OIDC_SCOPE=systim:faktury
 ```
@@ -288,11 +289,11 @@ OIDC_SCOPE=systim:faktury
 **1. Issuer zawiera slug aplikacji i kończy się ukośnikiem.**
 
 W domyślnym trybie „per provider" issuer ma postać
-`https://auth.recoop.pl/application/o/<slug-aplikacji>/`, a nie samo
-`https://auth.recoop.pl/`. Sprawdź go u źródła:
+`https://auth.firma.pl/application/o/<slug-aplikacji>/`, a nie samo
+`https://auth.firma.pl/`. Sprawdź go u źródła:
 
 ```bash
-curl -s https://auth.recoop.pl/application/o/systim-mcp/.well-known/openid-configuration | jq .issuer
+curl -s https://auth.firma.pl/application/o/systim-mcp/.well-known/openid-configuration | jq .issuer
 ```
 
 **2. Bez `offline_access` nie ma refresh tokenu.**
@@ -321,7 +322,7 @@ Zamiast diagnozować nieudane podpięcie w claude.ai, uruchom test integracyjny.
 Sprawdza discovery, PKCE S256 i to, czy parser przyjmuje wszystkie klucze z JWKS:
 
 ```bash
-AUTH_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
+AUTH_ISSUER=https://auth.firma.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
 ```
 
 ### Rejestracja klienta
@@ -368,7 +369,7 @@ OIDC_SCOPE=systim:faktury
 
 Panel administracyjny: `http://127.0.0.1:9000` (`akadmin` / `akadmin`).
 
-Ten profil jest zbędny, jeśli korzystasz z `auth.recoop.pl` — służy do przejścia
+Ten profil jest zbędny, jeśli masz już własnego authentika — służy do przejścia
 flow bez ruszania instancji produkcyjnej.
 
 ### Alternatywa: `static_headers`
@@ -479,7 +480,7 @@ Rozpoznanie — w logach authentika pojawia się wtedy wprost:
 Sprawdzenie z zewnątrz, bez dostępu do logów (podstaw swój `client_id` i issuer):
 
 ```bash
-curl -si "https://auth.recoop.pl/application/o/authorize/?client_id=systim-mcp-connector&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&response_type=code&scope=openid&state=t" | grep -i '^location:'
+curl -si "https://auth.firma.pl/application/o/authorize/?client_id=systim-mcp-connector&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&response_type=code&scope=openid&state=t" | grep -i '^location:'
 ```
 
 - `Location: /if/flow/...` → poprawnie, provider kieruje do logowania,
@@ -575,15 +576,15 @@ W parametrze `scope` powinny być `systim:faktury openid offline_access`.
 Dwa najczęstsze przypadki przy authentiku:
 
 - **`iss`**: w trybie per-provider issuer zawiera slug aplikacji i kończy się
-  ukośnikiem. `https://auth.recoop.pl/` zamiast
-  `https://auth.recoop.pl/application/o/systim-mcp/` nie zadziała.
+  ukośnikiem. `https://auth.firma.pl/` zamiast
+  `https://auth.firma.pl/application/o/systim-mcp/` nie zadziała.
 - **`aud`**: authentik wstawia tam `client_id`, więc `OIDC_AUDIENCE` musi być
   równe `systim-mcp-connector`, a nie adresowi serwera MCP.
 
 Obie rzeczy potwierdzisz jednym poleceniem:
 
 ```bash
-AUTH_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
+AUTH_ISSUER=https://auth.firma.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
 ```
 
 Przy `LOG_LEVEL=debug` serwer loguje też powód odrzucenia każdego tokenu.
@@ -649,7 +650,7 @@ mockujących. Pokrywają między innymi:
 Osobno, poza `go test ./...`, można sprawdzić konfigurację prawdziwego IdP:
 
 ```bash
-AUTH_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
+AUTH_ISSUER=https://auth.firma.pl/application/o/systim-mcp/ go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
 ```
 
 Test jest domyślnie pomijany. Weryfikuje discovery, obecność PKCE S256 i to, czy

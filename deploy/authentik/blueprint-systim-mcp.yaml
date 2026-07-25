@@ -2,7 +2,7 @@
 #
 # Tworzy: własny scope „systim:faktury", provider OAuth2 i aplikację.
 #
-# Zastosowanie na istniejącej instancji (np. https://auth.recoop.pl):
+# Zastosowanie na istniejącej instancji authentika:
 #   authentik → Customization → Blueprints → Create → Local file / OCI,
 #   albo zamontuj katalog deploy/authentik do /blueprints/custom w kontenerze
 #   authentik-server i authentik-worker.
@@ -21,7 +21,7 @@ metadata:
 
 context:
   # Slug aplikacji wchodzi do adresu issuera:
-  #   https://auth.recoop.pl/application/o/<slug>/
+  #   https://auth.firma.pl/application/o/<slug>/
   slug_aplikacji: systim-mcp
 
   client_id: systim-mcp-connector
@@ -128,7 +128,7 @@ entries:
         ]
 
       # Tryb per-provider (domyślny) daje issuer:
-      #   https://auth.recoop.pl/application/o/systim-mcp/
+      #   https://auth.firma.pl/application/o/systim-mcp/
       issuer_mode: per_provider
       sub_mode: hashed_user_id
 

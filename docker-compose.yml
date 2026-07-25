@@ -38,7 +38,7 @@ services:
   # Dzięki temu cały flow OAuth 2.1 z PKCE da się przejść lokalnie, bez wystawiania
   # czegokolwiek na świat.
   #
-  # Jeśli masz już działającego authentika (np. https://auth.recoop.pl), ten profil
+  # Jeśli masz już działającego authentika, ten profil
   # jest zbędny — zaimportuj tam sam blueprint i ustaw OIDC_ISSUER na swoją instancję.
   authentik-postgresql:
     image: docker.io/library/postgres:16-alpine

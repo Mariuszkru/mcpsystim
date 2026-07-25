@@ -15,7 +15,7 @@ import (
 //
 // Test jest pomijany, dopóki nie wskażesz issuera. Uruchomienie:
 //
-//	AUTH_ISSUER=https://auth.recoop.pl/application/o/systim-mcp/ \
+//	AUTH_ISSUER=https://auth.firma.pl/application/o/systim-mcp/ \
 //	  go test ./internal/auth/ -run TestIntegracjaZPrawdziwymIdP -v
 //
 // Przy lokalnym profilu dev:
